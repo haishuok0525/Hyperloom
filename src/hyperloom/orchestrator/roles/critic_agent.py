@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import subprocess
 import sys
 import time
@@ -17,6 +16,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from hyperloom.brain_api import (
+    BrainTurn,
+    CallSite,
+    LlmCallError,
+    LlmReply,
+    StateSnapshot,
+    TickBatch,
+    ToolCall,
+    TurnFailed,
+    WireError,
+)
+from hyperloom.brain_api.wire import json_value
 from hyperloom.common.framework_arm import review_row_id
 from hyperloom.common.llm_config import (
     DEFAULT_CODEX_MODEL,
@@ -29,7 +40,6 @@ from hyperloom.common.llm_config import (
     build_http_timeout,
     get_async_openai_client,
 )
-from hyperloom.common.jsonio import extract_last_json_matching
 from hyperloom.inference_optimizer.protocol.intent import (
     IntentValidationError,
     NoIntentEmitted,
@@ -42,8 +52,9 @@ from hyperloom.inference_optimizer.trace.conversation_trace import ConversationR
 from hyperloom.inference_optimizer.trace.llm_trace import LLMCallRecord, LLMCallSite, append_llm_call, new_call_id
 from hyperloom.inference_optimizer.trace.parse_usage import reasoning_output_tokens
 from hyperloom.inference_optimizer.trace.trajectory_trace import current_context
+from hyperloom.orchestrator.brain_link import resolve_brain
+from hyperloom.orchestrator.lever import patch_lever_kind
 from .base import BackendError, BackendTurnResult, LLMCallFailed, build_chat_messages, parse_call_timeout_env
-from ._review_constraints import apply_review_constraints
 
 if TYPE_CHECKING:
     from hyperloom.inference_optimizer.breakdown.recorder.critic_out import CriticIteration
@@ -57,11 +68,6 @@ CRITIC_AGENT_RUNTIME_TIMEOUT_SEC = 30  # prepare-review / commit-review wall cap
 _STDERR_TRUNCATE_CHARS = 500
 # Output-token cap for both review paths.
 CRITIC_AGENT_MAX_COMPLETION_TOKENS = 32000
-# One retry at this multiple of the cap when a reply stops at the limit.
-CRITIC_AGENT_TRUNCATION_RETRY_FACTOR = 2
-# Finish/stop reasons that mean "cut off at the output cap": OpenAI reports ``length``, the Anthropic Messages API
-# reports ``max_tokens``.
-_TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
 
 def _accumulate_usage(acc: dict[str, int], counts: dict[str, int], usage: Any) -> None:
@@ -79,75 +85,6 @@ CRITIC_AGENT_LLM_RW_TIMEOUT_SEC = 300.0
 
 # Cap on per-turn workdirs kept on disk; older ones are pruned each turn.
 CRITIC_AGENT_WORKDIR_KEEP_COUNT = 50
-
-# Output instructions for the exact ``review.json`` shape commit-review validates.
-_REVIEW_OUTPUT_INSTRUCTIONS = """
-==== OUTPUT FORMAT (REQUIRED) ====
-Reply with EXACTLY ONE JSON object that matches this review schema:
-
-{
-  "review_verdicts": [
-    {
-      "target_proposal_msg_id": "<the proposal's msg_id from the bundle>",
-      "verdict": "approve" | "reject" | "redirect" | "advise" | "needs_review",
-      "source": "critic" | "critic_unavailable",
-      "reasoning": "<short, explicit reasoning>",
-      "confidence": "low" | "medium" | "high",
-      "predicted_gain_pct": <number or null>,
-      "kb_evidence": ["<kb_id>", ...],
-      "packet_evidence": ["<dotted.path.in.packet>", ...],
-      "risks": [{"severity": "blocker|major|minor", "summary": "..."}],
-      "required_evidence": ["<key>", ...],
-      "notes": ["..."],
-      "failure_reason_code": "<failure_reason_code of the review_constraints rule this verdict rests on, else \"\">",
-      "persist_to_kb": false,
-      "topic": "<slug>"
-    }
-  ],
-  "advice": [
-    { "target_proposal_msg_id": "<msg_id>", "body_md": "..." }
-  ]
-}
-
-Rules (mirror SKILL.md Hard Rules + Approve Standard):
-- Wrap the JSON in a ```json fenced block. Bare JSON is also accepted.
-- Free text outside the JSON is ignored.
-- Keep `reasoning`/`notes` to new, decision-relevant points; do not restate the
-  proposal or context already in the judge_bundle.
-- Emit one verdict object PER proposal in `judge_bundle.proposals`.
-- If `judge_bundle.required_context` is non-empty, every verdict MUST be
-  `needs_review` with `source = "critic_unavailable"` and list the
-  missing keys in `notes`.
-- If `judge_bundle.kb_read_skipped_reason == "kb_unreachable"`, prefer
-  `advise` / `needs_review` over `approve` and mention the missing KB
-  recall in `notes`.
-- If there are no proposals, return `{"review_verdicts": []}` — the
-  runtime falls back to a heartbeat.
-- `approve` requires comparable before/after benchmark, accuracy gate
-  (or waiver), active-path proof when relevant, and a clear rollback.
-- Omit `alternative_action`.
-- When a verdict rests on a rule from `review_constraints`, copy that
-  rule's `failure_reason_code` verbatim into the verdict's own
-  `failure_reason_code`; leave it `""` when the verdict rests on your
-  own judgement. Some of those rules declare `advise` as their
-  `failure_verdict`, and naming the rule is how the Coordinator tells
-  a verdict resting on one apart from a substantive refusal.
-==== END OUTPUT FORMAT ====
-""".strip()
-
-
-# Bare {...} fallback carrying "review_verdicts" (fenced case handled by helper).
-_BARE_JSON_RE = re.compile(r"(\{[^{}]*\"review_verdicts\"[\s\S]*\})", re.DOTALL)
-
-
-def _extract_review_json(text: str) -> dict[str, Any] | None:
-    """Pull the Critic's own ``{\"review_verdicts\": ...}`` object out of a reply."""
-    return extract_last_json_matching(text, "review_verdicts", _BARE_JSON_RE)
-
-
-def _is_truncated_finish(finish: str | None) -> bool:
-    """Report whether a finish/stop reason means the reply hit the output cap."""
-    return isinstance(finish, str) and finish.strip().lower() in _TRUNCATED_FINISH_REASONS
 
 
 @dataclass
@@ -285,6 +222,123 @@ def _verdict_references_kb(review: dict[str, Any] | None) -> bool:
     return False
 
 
+def _proposal_lever(proposal: Any) -> str:
+    """The lever a reviewed proposal moves: its own markers first, then its params'."""
+    if not isinstance(proposal, dict):
+        return ""
+    lever = patch_lever_kind(proposal)
+    if not lever:
+        params = proposal.get("params")
+        lever = patch_lever_kind(params if isinstance(params, dict) else None)
+    return lever
+
+
+def _ruling(turn: BrainTurn) -> dict[str, Any]:
+    """The ruling a Critic turn asks to record; a turn that records none rules on nothing."""
+    names = [call.name for call in turn.tool_calls]
+    if any(name != "verdict.record" for name in names) or len(names) > 1:
+        raise BackendError(
+            f"CriticAgentBackend: a critic turn records one ruling and nothing else; the brain asked for {names}"
+        )
+    return dict(turn.tool_calls[0].args) if turn.tool_calls else {}
+
+
+class _CriticReviewModel:
+    """The review model a Critic turn is lent: the backend's transport, its trace rows and its call ids."""
+
+    role = "critic"
+
+    def __init__(self, backend: "CriticAgentBackend", port: "_CriticTurnPort") -> None:
+        self._backend = backend
+        self._port = port
+        self._calls = 0
+
+    async def run(
+        self,
+        prompt: str,
+        *,
+        system_prompt: str | None = None,
+        prefix: str | None = None,
+        max_tokens: int | None = None,
+        tools: Any = None,
+        max_turns: int | None = None,
+    ) -> LlmReply:
+        """One review call; a failed one reaches the brain as :class:`LlmCallError`."""
+        del tools, max_turns
+        # The turn's first call takes the id of an ``llm.call`` span its caller opened; a retry gets its own.
+        call_id = (current_context().call_id if self._calls == 0 else None) or new_call_id()
+        self._calls += 1
+        try:
+            text, finish = await self._backend._review_call(
+                system_prompt=system_prompt,
+                preamble=prefix or "",
+                review_prompt=prompt,
+                max_tokens=int(max_tokens or CRITIC_AGENT_MAX_COMPLETION_TOKENS),
+                call_id=call_id,
+            )
+        except BackendError as exc:
+            raise self._port.own(LlmCallError(str(exc))) from exc
+        return LlmReply(raw_text=text, finish_reason=finish)
+
+
+class _CriticTurnPort:
+    """What one Critic turn lends the brain: the review model, and the judge bundle prepare-review builds."""
+
+    def __init__(
+        self,
+        backend: "CriticAgentBackend",
+        *,
+        request_path: Path,
+        judge_path: Path,
+        env: dict[str, str],
+    ) -> None:
+        self._backend = backend
+        self._request_path = request_path
+        self._judge_path = judge_path
+        self._env = env
+        self._owned: list[TurnFailed] = []
+        self._levers: list[str] = []
+        #: The bundle prepare-review wrote, once the brain has read it.
+        self.judge_bundle: dict[str, Any] | None = None
+        self.llm = {"critic": _CriticReviewModel(backend, self)}
+
+    async def call(self, call: ToolCall) -> dict[str, Any]:
+        """Answer ``kb.critic.read`` with the judge bundle and the lever of each proposal in it."""
+        if call.name != "kb.critic.read":
+            raise TurnFailed(f"CriticAgentBackend: a critic turn cannot call {call.name!r}")
+        if self.judge_bundle is None:
+            try:
+                bundle = await self._backend._prepare_review(
+                    request_path=self._request_path, judge_path=self._judge_path, env=self._env
+                )
+            except BackendError as exc:
+                raise self.own(TurnFailed(str(exc))) from exc
+            proposals = bundle.get("proposals") if isinstance(bundle, dict) else None
+            self._levers = [_proposal_lever(p) for p in proposals] if isinstance(proposals, list) else []
+            self.judge_bundle = bundle
+        return {"judge_bundle": json_value(self.judge_bundle, "judge bundle"), "proposal_levers": list(self._levers)}
+
+    def own(self, failure: TurnFailed) -> TurnFailed:
+        """Remember ``failure`` as one this port raised for a body error, so the body's error can be restored."""
+        self._owned.append(failure)
+        return failure
+
+    def body_error(self, failure: TurnFailed) -> BaseException:
+        """The error the backend raises for a failed brain turn.
+
+        A failure this port raised and the brain let through is the body's own error, raised as it was. Any other is
+        the brain's: a :class:`BackendError` with its message, caused by the body error underneath it, if any.
+        """
+        if any(failure is owned for owned in self._owned) and failure.__cause__ is not None:
+            return failure.__cause__
+        cause = failure.__cause__
+        while cause is not None and not isinstance(cause, BackendError):
+            cause = cause.__cause__
+        error = BackendError(str(failure))
+        error.__cause__ = cause
+        return error
+
+
 @dataclass
 class CriticAgentBackend:
     """Real Critic backend that drives the critic-agent runtime."""
@@ -326,6 +380,8 @@ class CriticAgentBackend:
     )
     # Resolved review model id (protocol-aware).
     _review_model: str = field(default="", init=False, repr=False)
+    # What the brain returned from its last Critic turn, handed back on the next.
+    _brain_state: bytes | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Validate config, wire transports, and resolve static context."""
@@ -447,43 +503,16 @@ class CriticAgentBackend:
 
         env = self._build_runtime_env()
 
-        # prepare-review runs off-thread because subprocess.run blocks.
-        await asyncio.to_thread(
-            self._runtime_caller,
-            RuntimeCall(
-                phase="prepare-review",
-                request_path=request_path,
-                review_path=None,
-                out_path=judge_path,
-                cwd=self.critic_agent_root,
-                env=env,
-            ),
-        )
-        try:
-            judge_bundle = json.loads(judge_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise BackendError(f"CriticAgentBackend: failed to read judge_bundle from {judge_path}: {exc}") from exc
-
-        # Snapshot the reviewed proposal msg_ids for trace attribution.
-        self._trace_reviewed_msg_ids = _reviewed_msg_ids_from_bundle(judge_bundle)
-
-        apply_review_constraints(
-            judge_bundle,
-            phase=self._trace_phase or "",
-            action_verdict_policy=self.action_verdict_policy,
-        )
-
-        # Codex reasoning; short-circuit when there are no proposals.
+        # The brain judges; this turn's port runs prepare-review when it reads the bundle.
+        port = _CriticTurnPort(self, request_path=request_path, judge_path=judge_path, env=env)
+        ruling = await self._ask_brain(port, system_prompt)
+        judge_bundle = ruling.get("judge_bundle")
+        if not isinstance(judge_bundle, dict):
+            judge_bundle = port.judge_bundle or {}
+        review = ruling.get("review") if isinstance(ruling.get("review"), dict) else {"review_verdicts": []}
+        llm_text = str(ruling.get("raw_text") or "")
+        llm_finish = ruling.get("finish")
         proposals = judge_bundle.get("proposals") or []
-        if not proposals:
-            review = {"review_verdicts": []}
-            llm_text = "(skipped — no proposals)"
-            llm_finish = "skipped"
-        else:
-            review, llm_text, llm_finish = await self._reason(
-                judge_bundle=judge_bundle,
-                system_prompt=system_prompt,
-            )
 
         review_path.write_text(
             json.dumps(review, ensure_ascii=False, indent=2),
@@ -757,36 +786,93 @@ class CriticAgentBackend:
             "referenced_in_verdict": _verdict_references_kb(review),
         }
 
-    async def _reason(
+    async def _ask_brain(self, port: "_CriticTurnPort", system_prompt: str | None) -> dict[str, Any]:
+        """Run the brain's Critic turn and return the ruling it asks to record.
+
+        Raises:
+            BackendError: the body's own error when one of its calls failed under the brain, else one carrying the
+                brain's reason for failing the turn.
+        """
+        failure: BaseException | None = None
+        try:
+            batch = TickBatch(
+                call_site=CallSite.LLM_TURN,
+                tick=self._trace_tick or 0,
+                now_unix=time.time(),
+                events=(),
+                snapshot=StateSnapshot(
+                    phase=self._trace_phase or "",
+                    data={"critic": self._brain_inputs(system_prompt)},
+                ),
+                brain_state=self._brain_state,
+            )
+            turn = await resolve_brain().on_llm_turn(batch, port)
+        except TurnFailed as exc:
+            failure = port.body_error(exc)
+        except WireError as exc:
+            failure = BackendError(f"CriticAgentBackend: {exc}")
+            failure.__cause__ = exc
+        if failure is not None:
+            # Raised outside the handler, so a restored body error keeps the chain it was raised with.
+            raise failure
+        self._brain_state = turn.brain_state
+        return _ruling(turn)
+
+    def _brain_inputs(self, system_prompt: str | None) -> dict[str, Any]:
+        """What the brain's Critic turn is given: its prompts, its output cap, and the review rules this body enforces."""
+        from ..specialists.patch_safety import (
+            ADVISORY_RULE_PROPOSAL_KINDS,
+            SCOPE_DOMAINS_LITERAL,
+            cross_domain_rule_descriptors,
+            quantitative_claim_rule_descriptor,
+        )
+
+        return {
+            "system_prompt": system_prompt,
+            "skill_preamble": self._load_skill_preamble(),
+            "max_completion_tokens": self._resolve_max_completion_tokens(),
+            "action_verdict_policy": dict(self.action_verdict_policy),
+            "rules": {
+                "scope_domains": SCOPE_DOMAINS_LITERAL,
+                "cross_domain_rules": cross_domain_rule_descriptors(),
+                "quantitative_claim_rule": quantitative_claim_rule_descriptor(),
+                "advisory_rule_actions": sorted(ADVISORY_RULE_PROPOSAL_KINDS),
+            },
+        }
+
+    async def _prepare_review(self, *, request_path: Path, judge_path: Path, env: dict[str, str]) -> dict[str, Any]:
+        """Run prepare-review and return the judge bundle it wrote."""
+        # prepare-review runs off-thread because subprocess.run blocks.
+        await asyncio.to_thread(
+            self._runtime_caller,
+            RuntimeCall(
+                phase="prepare-review",
+                request_path=request_path,
+                review_path=None,
+                out_path=judge_path,
+                cwd=self.critic_agent_root,
+                env=env,
+            ),
+        )
+        try:
+            judge_bundle = json.loads(judge_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BackendError(f"CriticAgentBackend: failed to read judge_bundle from {judge_path}: {exc}") from exc
+
+        # Snapshot the reviewed proposal msg_ids for trace attribution.
+        self._trace_reviewed_msg_ids = _reviewed_msg_ids_from_bundle(judge_bundle)
+        return judge_bundle
+
+    async def _review_call(
         self,
         *,
-        judge_bundle: dict[str, Any],
         system_prompt: str | None,
-    ) -> tuple[dict[str, Any], str, str | None]:
-        """Drive Codex with the judge bundle and parse a review object."""
-        preamble = self._load_skill_preamble()
-        bundle_view: dict[str, Any] = {
-            "session_id": judge_bundle.get("session_id"),
-            "decision_id": judge_bundle.get("decision_id"),
-            "phase": judge_bundle.get("phase"),
-            "merged_context": judge_bundle.get("merged_context"),
-            "missing_context": judge_bundle.get("missing_context"),
-            "required_context": judge_bundle.get("required_context"),
-            "proposals": judge_bundle.get("proposals"),
-            "kb_priors_by_proposal": judge_bundle.get("kb_priors_by_proposal"),
-            "kb_read_skipped_reason": judge_bundle.get("kb_read_skipped_reason"),
-            "review_constraints": judge_bundle.get("review_constraints"),
-            "notes": judge_bundle.get("notes"),
-        }
-        bundle_text = json.dumps(bundle_view, ensure_ascii=False, separators=(",", ":"))
-        review_prompt = (
-            f"==== JUDGE BUNDLE ====\n{bundle_text}\n==== END JUDGE BUNDLE ====\n\n{_REVIEW_OUTPUT_INSTRUCTIONS}"
-        )
-        user_prompt = f"{preamble}\n\n{review_prompt}"
-        max_tokens = self._resolve_max_completion_tokens()
-        # One id per review call, shared by its token row and its conversation row so the two halves pair on the call
-        # rather than on a ts second. A caller that opened an ``llm.call`` trajectory span owns the id.
-        call_id = current_context().call_id or new_call_id()
+        preamble: str,
+        review_prompt: str,
+        max_tokens: int,
+        call_id: str,
+    ) -> tuple[str, str | None]:
+        """One review model call, recorded on conversations.jsonl once it answers."""
         text, finish = await self._run_reasoning_loop(
             system_prompt=system_prompt,
             preamble=preamble,
@@ -794,59 +880,14 @@ class CriticAgentBackend:
             max_tokens=max_tokens,
             call_id=call_id,
         )
-
         # Mirror the full prompt + reply onto conversations.jsonl so the critic turn is replayable.
         self._record_critic_conversation(
             system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            user_prompt=f"{preamble}\n\n{review_prompt}",
             response=text,
             call_id=call_id,
         )
-        review = _extract_review_json(text)
-
-        if review is None and _is_truncated_finish(finish):
-            # Retrying a cap-truncated reply under the same cap would truncate again at the same byte, so the retry
-            # only makes sense with more room.
-            retry_tokens = max_tokens * CRITIC_AGENT_TRUNCATION_RETRY_FACTOR
-            log.warning(
-                "critic_agent_backend: review reply stopped at the %d-token cap "
-                "(chars=%d, finish=%s); retrying once with %d",
-                max_tokens,
-                len(text),
-                finish,
-                retry_tokens,
-            )
-            retry_call_id = new_call_id()
-            try:
-                text, finish = await self._run_reasoning_loop(
-                    system_prompt=system_prompt,
-                    preamble=preamble,
-                    review_prompt=review_prompt,
-                    max_tokens=retry_tokens,
-                    call_id=retry_call_id,
-                )
-            except BackendError as exc:
-                # A provider whose own output limit sits below the doubled cap rejects the retry outright.
-                raise BackendError(
-                    f"CriticAgentBackend: review reply was truncated at {max_tokens} tokens "
-                    f"and the retry at {retry_tokens} was rejected: {exc}"
-                ) from exc
-            self._record_critic_conversation(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                response=text,
-                call_id=retry_call_id,
-            )
-            review = _extract_review_json(text)
-            max_tokens = retry_tokens
-
-        if review is None:
-            # A reply carrying no verdicts is a review that failed to arrive, not a review that found nothing to say.
-            raise BackendError(
-                "CriticAgentBackend: review reply carried no parseable review_verdicts JSON "
-                f"(chars={len(text)}, finish={finish!r}, max_tokens={max_tokens})"
-            )
-        return review, text, finish
+        return text, finish
 
     async def _run_reasoning_loop(
         self,
@@ -1070,12 +1111,9 @@ class CriticAgentBackend:
 __all__ = [
     "CRITIC_AGENT_MAX_COMPLETION_TOKENS",
     "CRITIC_AGENT_RUNTIME_TIMEOUT_SEC",
-    "CRITIC_AGENT_TRUNCATION_RETRY_FACTOR",
     "CRITIC_AGENT_WORKDIR_KEEP_COUNT",
     "CriticAgentBackend",
     "RuntimeCall",
     "RuntimeCaller",
     "_default_runtime_caller",
-    "_extract_review_json",
-    "_is_truncated_finish",
 ]

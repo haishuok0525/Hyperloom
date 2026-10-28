@@ -513,9 +513,9 @@ def test_judge_bundle_to_dict_carries_phase():
 
 
 def test_inject_phase_constraints_delivers_only_the_active_phase():
-    from hyperloom.orchestrator.roles._review_constraints import (
-        _PHASE_ORIENTATION,
-        _inject_phase_constraints,
+    from hyperloom.brain.critic.constraints import (
+        PHASE_ORIENTATION as _PHASE_ORIENTATION,
+        inject_phase_constraints as _inject_phase_constraints,
     )
 
     bundle: dict = {"proposals": []}
@@ -529,7 +529,7 @@ def test_inject_phase_constraints_delivers_only_the_active_phase():
 
 def test_inject_phase_constraints_is_a_noop_without_a_phase():
     """Never assert a phase that was not delivered."""
-    from hyperloom.orchestrator.roles._review_constraints import _inject_phase_constraints
+    from hyperloom.brain.critic.constraints import inject_phase_constraints as _inject_phase_constraints
 
     bundle: dict = {"proposals": []}
     _inject_phase_constraints(bundle, "")
