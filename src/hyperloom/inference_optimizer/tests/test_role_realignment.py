@@ -959,6 +959,7 @@ async def test_extend_lease_wall_budget_grant_failure_is_recorded_as_an_intent_e
 async def test_enablement_rearm_failure_on_critic_reject_reaches_the_router(coordinator_with_mocks, monkeypatch):
     from hyperloom.orchestrator.loop.proposals import PendingProposal
     from hyperloom.orchestrator.loop.verdicts import CriticRuling
+    from hyperloom.inference_optimizer.tests._settled import settled
 
     c = coordinator_with_mocks
     try:
@@ -977,9 +978,7 @@ async def test_enablement_rearm_failure_on_critic_reject_reaches_the_router(coor
         with pytest.raises(RuntimeError, match="enablement lane unavailable"):
             await c.router._apply_verdict_outcome(
                 pending,
-                ruling=CriticRuling(verdict="reject", reasoning="regresses accuracy"),
-                pa_params={"enablement": True},
-                sid_candidate="t-enable",
+                ruling=settled(pending, CriticRuling(verdict="reject", reasoning="regresses accuracy")),
             )
     finally:
         await c.stop()

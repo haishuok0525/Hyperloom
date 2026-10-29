@@ -18,6 +18,7 @@ from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.loop.proposals import PendingProposal
 from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
 from hyperloom.orchestrator.loop.verdicts import CriticRuling
+from hyperloom.inference_optimizer.tests._settled import settled
 
 
 def _heartbeat() -> Intent:
@@ -103,7 +104,9 @@ async def test_needs_review_with_evidence_reauthors_once(coord: Coordinator) -> 
     await coord.router._handle_single_verdict(
         source="critic",
         pending=pending,
-        ruling=CriticRuling(verdict="needs_review", reasoning="needs more evidence", advisory=dict(_ADVISORY)),
+        ruling=settled(
+            pending, CriticRuling(verdict="needs_review", reasoning="needs more evidence", advisory=dict(_ADVISORY))
+        ),
     )
 
     assert len(calls) == 1
@@ -140,7 +143,10 @@ async def test_reauthor_guard_caps_and_suffixes(coord: Coordinator) -> None:
         await coord.router._handle_single_verdict(
             source="critic",
             pending=_framework_agent_pending(),
-            ruling=CriticRuling(verdict="needs_review", reasoning="needs more evidence", advisory=dict(_ADVISORY)),
+            ruling=settled(
+                _framework_agent_pending(),
+                CriticRuling(verdict="needs_review", reasoning="needs more evidence", advisory=dict(_ADVISORY)),
+            ),
         )
 
     assert len(created) == _AUTHORED_LANE_MAX_ATTEMPTS
@@ -178,7 +184,10 @@ async def test_reauthor_skipped_when_candidate_already_materializing(
     await coord.router._handle_single_verdict(
         source="critic",
         pending=_framework_agent_pending(),
-        ruling=CriticRuling(verdict="needs_review", reasoning="needs more evidence", advisory=dict(_ADVISORY)),
+        ruling=settled(
+            _framework_agent_pending(),
+            CriticRuling(verdict="needs_review", reasoning="needs more evidence", advisory=dict(_ADVISORY)),
+        ),
     )
 
     assert calls == []
@@ -245,7 +254,9 @@ async def test_advise_verdict_does_not_reauthor(coord: Coordinator) -> None:
     await coord.router._handle_single_verdict(
         source="critic",
         pending=pending,
-        ruling=CriticRuling(verdict="advise", reasoning="proceed with notes", advisory=dict(_ADVISORY)),
+        ruling=settled(
+            pending, CriticRuling(verdict="advise", reasoning="proceed with notes", advisory=dict(_ADVISORY))
+        ),
     )
 
     # advise = proceed: materialises but never re-authors.
@@ -264,8 +275,11 @@ async def test_needs_review_without_required_evidence_no_reauthor(
     await coord.router._handle_single_verdict(
         source="critic",
         pending=pending,
-        ruling=CriticRuling(
-            verdict="needs_review", reasoning="vague", advisory={"advice_text": "do better", "risks": ["x"]}
+        ruling=settled(
+            pending,
+            CriticRuling(
+                verdict="needs_review", reasoning="vague", advisory={"advice_text": "do better", "risks": ["x"]}
+            ),
         ),
     )
 

@@ -20,14 +20,9 @@ from hyperloom.orchestrator.lever import (
 )
 from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
 from hyperloom.common.timeutil import format_exc_brief
-from .verdicts import (
-    CriticRuling,
-    collapse_verdict_map,
-    collapse_verdicts,
-    serialize_verdict_advisory,
-    verdict_held_to_its_rule,
-    verdict_map_entry_held_to_its_rule,
-)
+from hyperloom.brain_api import VerdictOutcome
+from .verdicts import CriticRuling, serialize_verdict_advisory
+from .verdict_settlement import VerdictHold, settle_verdict, settlement_request
 from hyperloom.common.coerce import to_int, to_unix
 from ..bus.message_bus import Message
 from ..policy.gate import (
@@ -595,56 +590,29 @@ class IntentRouter(CoordinatorCollaborator):
                 },
             )
             return
-        verdict = await self._record_verdict_hold(
-            verdict_held_to_its_rule(intent.payload, action_name=pending.action_name),
-            target=target,
+        settled = await settle_verdict(
+            settlement_request(intent.payload, pending.action_name, pending.payload or {}),
+            tick=int(self.shared_state.tick or 0),
+            phase=self.shared_state.phase or "",
         )
-        authored = str(single_verdict or "").strip()
-        approved_variant_names: set[str] | None = None
-        held_by_name: dict[str, str] = {}
-        if not verdict and isinstance(verdict_map, dict) and verdict_map:
-            held_by_name = await self._held_verdict_map(
-                verdict_map,
-                target=target,
-                action_name=pending.action_name,
-                payload=intent.payload,
-            )
-            verdict, approved_variant_names = collapse_verdict_map(held_by_name)
-            authored = collapse_verdicts(
-                str((entry or {}).get("verdict") or "").strip() for entry in verdict_map.values()
-            )
-            self._log_mixed_verdict_map_collapse(target, verdict, held_by_name)
+        for hold in settled.holds:
+            await self._record_verdict_hold(hold, target=target)
+        if settled.variants:
+            self._log_mixed_verdict_map_collapse(target, settled.verdict, settled.variants)
         await self._handle_single_verdict(
             source=source,
             pending=pending,
             ruling=CriticRuling(
-                verdict=verdict,
-                authored_verdict=authored,
+                verdict=settled.verdict,
+                authored_verdict=settled.authored,
                 reasoning=str(intent.payload.get("reasoning") or ""),
                 advisory=serialize_verdict_advisory(intent.payload),
-                approved_variant_names=approved_variant_names,
+                approved_variant_names=settled.approved_variants,
                 payload=intent.payload,
-                variant_verdicts=_variant_review_rows(intent.payload, held_by_name),
+                variant_verdicts=_variant_review_rows(intent.payload, settled.variants),
+                outcome=settled.outcome,
             ),
         )
-
-    async def _held_verdict_map(
-        self,
-        verdict_map: dict[str, Any],
-        *,
-        target: str,
-        action_name: str,
-        payload: dict[str, Any],
-    ) -> dict[str, str]:
-        """Hold each ``verdict_map`` entry to its cited rule."""
-        held_by_name: dict[str, str] = {}
-        for name, entry in verdict_map.items():
-            held_by_name[str(name)] = await self._record_verdict_hold(
-                verdict_map_entry_held_to_its_rule(entry, payload, action_name=action_name),
-                target=target,
-                variant=str(name),
-            )
-        return held_by_name
 
     def _log_mixed_verdict_map_collapse(
         self,
@@ -662,23 +630,14 @@ class IntentRouter(CoordinatorCollaborator):
                 sub_verdicts,
             )
 
-    async def _record_verdict_hold(
-        self,
-        held: tuple[str, str],
-        *,
-        target: str,
-        variant: str = "",
-    ) -> str:
-        """Return the verdict to act on, recording any hold to a cited rule."""
-        verdict, downgraded_from_code = held
-        if not downgraded_from_code:
-            return verdict
+    async def _record_verdict_hold(self, hold: VerdictHold, *, target: str) -> None:
+        """Record a verdict the brain held to its cited rule."""
         log.warning(
             "review_verdict held to its rule: target=%s variant=%s reject -> %s (reason_code=%s)",
             target,
-            variant or "-",
-            verdict,
-            downgraded_from_code,
+            hold.variant or "-",
+            hold.to_verdict,
+            hold.failure_reason_code,
         )
         await self.bus.record_observation(
             "coordinator",
@@ -686,13 +645,12 @@ class IntentRouter(CoordinatorCollaborator):
             {
                 "kind": "verdict_downgraded_to_rule_verdict",
                 "target": target,
-                "variant": variant,
+                "variant": hold.variant,
                 "from_verdict": "reject",
-                "to_verdict": verdict,
-                "failure_reason_code": downgraded_from_code,
+                "to_verdict": hold.to_verdict,
+                "failure_reason_code": hold.failure_reason_code,
             },
         )
-        return verdict
 
     async def _handle_single_verdict(
         self,
@@ -701,7 +659,7 @@ class IntentRouter(CoordinatorCollaborator):
         pending: Any,
         ruling: CriticRuling,
     ) -> None:
-        """Apply one collapsed verdict: approve/advise materialise, reject may rearm.
+        """Apply one collapsed verdict: record it, then carry out the outcome the brain settled it to.
 
         ``ruling.verdict`` is one of approve / advise / reject / needs_review.
         ``ruling.authored`` is what the Critic itself wrote before any hold to
@@ -768,9 +726,9 @@ class IntentRouter(CoordinatorCollaborator):
         _record_review_outcome(
             self,
             pending,
-            materialized=verdict in ("approve", "advise"),
+            materialized=ruling.outcome == VerdictOutcome.MATERIALIZE,
             denied=verdict == "reject",
-            reauthored=verdict == "needs_review",
+            reauthored=ruling.outcome == VerdictOutcome.REAUTHOR,
             patch_verdict_key=sid_candidate if patch_verdict else "",
         )
         with trajectory_span(
@@ -778,43 +736,31 @@ class IntentRouter(CoordinatorCollaborator):
             span_id=pending.proposal_msg_id,
             attributes={"name": pending.action_name, "verdict": verdict},
         ) as proposal_span:
-            await self._apply_verdict_outcome(
-                pending,
-                ruling=ruling,
-                pa_params=pa_params,
-                sid_candidate=sid_candidate,
-            )
+            await self._apply_verdict_outcome(pending, ruling=ruling)
             proposal_span.finish(
-                STATUS_COMPLETED if verdict in ("approve", "advise") else STATUS_CANCELLED,
+                STATUS_COMPLETED if ruling.outcome == VerdictOutcome.MATERIALIZE else STATUS_CANCELLED,
                 task_id=pending.task_id,
             )
 
-    async def _apply_verdict_outcome(
-        self,
-        pending: Any,
-        *,
-        ruling: CriticRuling,
-        pa_params: Mapping[str, Any],
-        sid_candidate: str,
-    ) -> None:
-        """Materialise, deny, or send back a proposal according to its collapsed verdict."""
+    async def _apply_verdict_outcome(self, pending: Any, *, ruling: CriticRuling) -> None:
+        """Carry out the outcome the brain settled a proposal's verdict to."""
         from ..phases.geak_native_revalidation import record_review
 
-        verdict = ruling.verdict
-        if record_review(self, pending, verdict=verdict, reasoning=ruling.reasoning):
+        if record_review(self, pending, verdict=ruling.verdict, reasoning=ruling.reasoning):
             return
-        if verdict in ("approve", "advise"):
+        outcome = ruling.outcome
+        if outcome == VerdictOutcome.MATERIALIZE:
             await self._coord.proposals.materialize_approved_proposal(
                 pending,
                 approved_variant_names=ruling.approved_variant_names,
             )
-        elif verdict == "reject" and is_upstream_pr_prescreen(pending.action_name, pending.payload):
+        elif outcome == VerdictOutcome.RECORD_DENIAL:
             await self._coord.phase_framework.record_critic_denial(pending, ruling.reasoning)
-        elif verdict == "reject" and pending.action_name == "integrate_patch" and bool(pa_params.get("enablement")):
+        elif outcome == VerdictOutcome.REARM_ENABLEMENT:
             await self._coord.enablement_lane.maybe_rearm_enablement(
                 {"enablement": True, "status": "reverted", "reason": "critic_rejected"}
             )
-        elif verdict == "needs_review":
+        elif outcome == VerdictOutcome.REAUTHOR:
             await self._coord.phase_framework.maybe_reauthor_from_critic_feedback(pending, ruling.advisory)
 
     def _seed_grid_params(self, request: DelegateRequest) -> None:

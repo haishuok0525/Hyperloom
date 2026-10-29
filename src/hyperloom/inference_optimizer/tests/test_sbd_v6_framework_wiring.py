@@ -26,6 +26,7 @@ from hyperloom.orchestrator.roles.agent_role import default_role_registry
 from hyperloom.orchestrator.roles.mock_backend import MockBackend, MockTurn, ScriptedPlan
 from hyperloom.orchestrator.phases.framework import ProgressStamp
 from hyperloom.orchestrator.loop.verdicts import CriticRuling
+from hyperloom.inference_optimizer.tests._settled import settled
 
 
 def _tr(reason: str) -> Transition:
@@ -1104,12 +1105,15 @@ def test_a_rejected_grid_is_reviewed_and_dropped(session_dir: Path):
         coord.router._handle_single_verdict(
             source="critic",
             pending=coord.state.pending_proposals[msg_id],
-            ruling=CriticRuling(
-                verdict="reject",
-                authored_verdict="reject",
-                reasoning="every variant raises the memory floor",
-                advisory=None,
-                approved_variant_names=None,
+            ruling=settled(
+                coord.state.pending_proposals[msg_id],
+                CriticRuling(
+                    verdict="reject",
+                    authored_verdict="reject",
+                    reasoning="every variant raises the memory floor",
+                    advisory=None,
+                    approved_variant_names=None,
+                ),
             ),
         )
     )
@@ -1306,11 +1310,14 @@ def test_a_patch_review_lands_on_the_candidate_it_judged(session_dir: Path):
         coord.router._handle_single_verdict(
             source="critic",
             pending=pending,
-            ruling=CriticRuling(
-                verdict="reject",
-                authored_verdict="reject",
-                reasoning="touches the serving loop",
-                payload={"verdict": "reject", "failure_reason_code": "serving_loop_touched"},
+            ruling=settled(
+                pending,
+                CriticRuling(
+                    verdict="reject",
+                    authored_verdict="reject",
+                    reasoning="touches the serving loop",
+                    payload={"verdict": "reject", "failure_reason_code": "serving_loop_touched"},
+                ),
             ),
         )
     )

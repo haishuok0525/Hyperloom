@@ -15,7 +15,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-from hyperloom.brain_api import BrainContractError, CallSite, StateSnapshot, TickBatch, ToolCall, TurnFailed
+from hyperloom.brain_api import BrainContractError, CallSite, StateSnapshot, TickBatch
 from hyperloom.common.perf_metric import is_agentx_mode
 from hyperloom.inference_optimizer.framework_registry import FRAMEWORKS, format_primary_metric
 from .agentx_context import corpus_lines, grading_lines, launch_ownership_lines
@@ -32,7 +32,7 @@ from ..specialists.domains import (
     SpecialistDomain,
     domain_for_tag,
 )
-from ..brain_link import resolve_brain
+from ..brain_link import DecisionPort, resolve_brain
 from ..specialists.profile import MODE_PATCH
 
 
@@ -191,15 +191,6 @@ class SpecialistPromptInputs:
     custom_specialist_prompt: str = ""
 
 
-class _BriefPort:
-    """What a brief call lends the brain: no model and no tool."""
-
-    llm: dict[str, Any] = {}
-
-    async def call(self, call: ToolCall) -> dict[str, Any]:
-        raise TurnFailed(f"a specialist brief cannot call {call.name!r}")
-
-
 async def brief_from_brain(prompt_inputs: SpecialistPromptInputs) -> tuple[str, str]:
     """The ``(system_prompt, user_prompt)`` the brain writes for this dispatch.
 
@@ -214,7 +205,7 @@ async def brief_from_brain(prompt_inputs: SpecialistPromptInputs) -> tuple[str, 
         events=(),
         snapshot=StateSnapshot(phase="", data={"specialist_brief": brief_request(prompt_inputs)}),
     )
-    turn = await brain.on_brief(batch, _BriefPort())
+    turn = await brain.on_brief(batch, DecisionPort("a specialist brief"))
     calls = turn.tool_calls
     if len(calls) == 1 and calls[0].name == "specialist.run":
         system_prompt, user_prompt = calls[0].args.get("system_prompt"), calls[0].args.get("user_prompt")

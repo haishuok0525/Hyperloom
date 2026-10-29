@@ -14,7 +14,7 @@ from hyperloom.brain_api.tools import INTENT_TOOLS, ToolCall
 from hyperloom.brain_api.wire import json_value
 
 #: ``major.minor``. A brain built for another major is refused; a newer minor only adds.
-CONTRACT_VERSION = "1.1"
+CONTRACT_VERSION = "1.2"
 
 
 class BrainContractError(RuntimeError):
@@ -92,13 +92,16 @@ class Brain(Protocol):
     contract_version: str
     #: Model role -> the intent types its model may emit, in the order it is offered them.
     role_intents: Mapping[str, Sequence[str]]
+    #: The Critic verdicts on a patch's review subject that let ``integrate_patch`` apply it.
+    patch_approval_verdicts: Sequence[str]
 
     async def on_llm_turn(self, batch: TickBatch, port: Port) -> BrainTurn:
         """The model turns; ``port.llm`` holds one handle per role that runs now."""
         ...
 
     async def on_settlement(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """One settled task, the only event in ``batch``."""
+        """One settled task, the only event in ``batch``; or one Critic verdict on a pending proposal, under
+        ``snapshot.data["review_verdict_settlement"]``."""
         ...
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
@@ -138,12 +141,20 @@ def _role_intents_fault(role_intents: object) -> str | None:
     return None
 
 
+def _approval_verdicts_fault(verdicts: object) -> str | None:
+    if isinstance(verdicts, str) or not isinstance(verdicts, Sequence):
+        return "has no patch_approval_verdicts sequence"
+    if not all(isinstance(v, str) and v for v in verdicts):
+        return f"patch_approval_verdicts {list(verdicts)!r} are not all verdict names"
+    return None
+
+
 def validate_brain(brain: object) -> Brain:
     """Return ``brain`` if it honours this contract.
 
     Raises:
         BrainContractError: if it names no brain, was built for another contract major, lacks a call site, or does not
-            say which intents each model role may emit.
+            say which intents each model role may emit or which Critic verdicts approve a patch.
     """
     name = getattr(brain, "name", None)
     if not (isinstance(name, str) and name):
@@ -156,7 +167,9 @@ def validate_brain(brain: object) -> Brain:
     missing = [m for m in CALL_SITE_METHODS.values() if not inspect.iscoroutinefunction(getattr(brain, m, None))]
     if missing:
         raise BrainContractError(f"brain {name!r} has no async {', '.join(missing)}")
-    fault = _role_intents_fault(getattr(brain, "role_intents", None))
+    fault = _role_intents_fault(getattr(brain, "role_intents", None)) or _approval_verdicts_fault(
+        getattr(brain, "patch_approval_verdicts", None)
+    )
     if fault:
         raise BrainContractError(f"brain {name!r} {fault}")
     return brain  # type: ignore[return-value]

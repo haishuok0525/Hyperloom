@@ -2322,6 +2322,7 @@ class Brain:
     name = "scripted"
     contract_version = "1.0"
     role_intents = {}
+    patch_approval_verdicts = ("advise", "approve")
 
     def __init__(self, config):
         self.tool = config.get("tool", "verdict.record")

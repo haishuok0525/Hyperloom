@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from hyperloom.brain.critic import CRITIC_ROLE, review_turn
+from hyperloom.brain.critic import CRITIC_ROLE, PATCH_APPROVAL_VERDICTS, SETTLEMENT_KEY, review_turn, settle_verdict
 from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
 from hyperloom.brain.roles import ROLE_INTENTS
 from hyperloom.brain.specialist import brief_turn
@@ -23,6 +23,7 @@ class BrainV0:
     name = "v0"
     contract_version = CONTRACT_VERSION
     role_intents = ROLE_INTENTS
+    patch_approval_verdicts = PATCH_APPROVAL_VERDICTS
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = dict(config)
@@ -36,7 +37,9 @@ class BrainV0:
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_settlement(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """No settlement follow-up has moved yet."""
+        """What a Critic verdict settles to; no settled task's follow-up has moved yet."""
+        if SETTLEMENT_KEY in batch.snapshot.data:
+            return settle_verdict(batch)
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:

@@ -33,6 +33,21 @@ class Caller(str, Enum):
     STRATEGY = "strategy"
 
 
+class VerdictOutcome(str, Enum):
+    """What a settled Critic verdict makes of its proposal, as ``verdict.settle`` names it."""
+
+    #: Run it: the proposal becomes a task.
+    MATERIALIZE = "materialize"
+    #: File the refusal of an upstream-PR pre-screen against its candidate.
+    RECORD_DENIAL = "record_denial"
+    #: Re-arm the enablement lane the refused patch came from.
+    REARM_ENABLEMENT = "rearm_enablement"
+    #: Hand the Critic's feedback back to the proposal's author.
+    REAUTHOR = "reauthor"
+    #: Nothing further.
+    NONE = "none"
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     """One entry of the tool catalogue."""
@@ -104,6 +119,11 @@ def _catalogue() -> dict[str, ToolSpec]:
         ToolSpec("message.alert", ToolKind.CONTROL, _BOTH),
         ToolSpec("message.request", ToolKind.CONTROL, _LLM_ONLY),
         ToolSpec("verdict.record", ToolKind.CONTROL, _BOTH),
+        # What one Critic verdict on a pending proposal settles to, ``{"verdict", "authored", "variants",
+        # "approved_variants", "holds", "outcome"}``: the verdict acted on and the one the Critic wrote, each variant's
+        # verdict, the variants that may run (``None`` for all), every verdict held to a cited rule
+        # (``{"variant", "to_verdict", "failure_reason_code"}``), and a :class:`VerdictOutcome`.
+        ToolSpec("verdict.settle", ToolKind.CONTROL, _STRATEGY_ONLY),
         ToolSpec("phase.request_exit", ToolKind.CONTROL, _BOTH),
         # One intent a model turn emitted, ``{"intent_type", "payload"}``, handed to the body's intent router whole.
         ToolSpec("intent.route", ToolKind.CONTROL, _LLM_ONLY),

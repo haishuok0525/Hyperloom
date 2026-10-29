@@ -25,23 +25,38 @@ from hyperloom.inference_optimizer.protocol.intent import (
     IntentValidationError,
     validate_envelope,
 )
-from hyperloom.orchestrator.loop.verdicts import (
-    collapse_verdict_map,
-    collapse_verdicts,
-    proceedable_variant_names,
-    verdict_held_to_its_rule,
-    verdict_map_entry_grounds,
-    verdict_map_entry_held_to_its_rule,
-)
+from hyperloom.brain.critic import ruling
+from hyperloom.brain.critic.ruling import collapse_verdict_map, collapse_verdicts, proceedable_variant_names
 from hyperloom.orchestrator.policy.gate import (
-    INTEGRATE_PATCH_PERMISSIVE_VERDICTS,
     PolicyDenied,
     PolicyGate,
+    integrate_patch_permissive_verdicts,
 )
 from hyperloom.orchestrator.specialists.patch_safety import (
     QUANTITATIVE_CLAIM_REASON_CODE,
+    advisory_only_reason_codes,
+    advisory_rules_govern,
     cross_domain_rule_descriptors,
 )
+
+INTEGRATE_PATCH_PERMISSIVE_VERDICTS = integrate_patch_permissive_verdicts()
+
+
+def _rules(action_name: str) -> ruling.AdvisoryRules:
+    """The advisory rules the body hands the brain for a review of an ``action_name`` proposal."""
+    return ruling.AdvisoryRules(advisory_only_reason_codes(), advisory_rules_govern(action_name))
+
+
+def verdict_held_to_its_rule(entry: Any, *, action_name: str) -> tuple[str, str]:
+    return ruling.verdict_held_to_its_rule(entry, _rules(action_name))
+
+
+def verdict_map_entry_grounds(entry: Any, payload: Any) -> dict[str, Any]:
+    return ruling.verdict_map_entry_grounds(entry, payload, advisory_only_reason_codes())
+
+
+def verdict_map_entry_held_to_its_rule(entry: Any, payload: Any, *, action_name: str) -> tuple[str, str]:
+    return ruling.verdict_map_entry_held_to_its_rule(entry, payload, _rules(action_name))
 
 
 # 1. intent_parser — envelope schema accepts verdict OR verdict_map
@@ -232,6 +247,8 @@ class _BareSharedState:
     explore_search: dict = field(default_factory=dict)
     macro_cycle: int = 0
     specialist_rounds: list = field(default_factory=list)
+    tick: int = 0
+    phase: str = ""
 
     def save(self, _session_dir: Path | None) -> None:
         self.save_count += 1

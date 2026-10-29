@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import threading
+from typing import Any
 
-from hyperloom.brain_api import Brain
+from hyperloom.brain_api import Brain, ToolCall, TurnFailed
 from hyperloom.brain_api.loader import load_brain
 from hyperloom.plugs import active
 
@@ -26,3 +27,15 @@ def resolve_brain() -> Brain:
         if _default is None:
             _default = load_brain()
         return _default
+
+
+class DecisionPort:
+    """What a brain call that only decides is lent: no model and no tool."""
+
+    llm: dict[str, Any] = {}
+
+    def __init__(self, what: str) -> None:
+        self._what = what
+
+    async def call(self, call: ToolCall) -> dict[str, Any]:
+        raise TurnFailed(f"{self._what} cannot call {call.name!r}")
