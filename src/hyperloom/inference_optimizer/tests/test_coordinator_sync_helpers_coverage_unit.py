@@ -432,7 +432,9 @@ def _round(domain: str, finding: str, confidence, questions=()) -> dict:
 
 def _findings(coord: Coordinator) -> str:
 
-    return coord.conversation._specialist_findings_block()
+    from hyperloom.inference_optimizer.tests._orchestration_prompt import specialist_findings
+
+    return specialist_findings(coord.conversation)
 
 
 def test_specialist_findings_survive_a_non_numeric_confidence(coord: Coordinator) -> None:
@@ -479,9 +481,9 @@ def test_specialist_findings_render_a_harvested_finding_once(coord: Coordinator)
 
 
 def test_specialist_findings_keep_the_newest_within_their_budget(coord: Coordinator, monkeypatch) -> None:
-    from hyperloom.orchestrator.loop import conversation
+    from hyperloom.brain.orchestrate import advisories
 
-    monkeypatch.setattr(conversation, "_FINDINGS_PROMPT_CHARS", 200)
+    monkeypatch.setattr(advisories, "FINDINGS_PROMPT_CHARS", 200)
     coord.shared_state.specialist_rounds = [
         _round("serving_specialist", f"finding-{i:02d} " + "x" * 40, 0.5) for i in range(10)
     ]
@@ -791,7 +793,7 @@ def test_framework_known_candidate_ids(coord: Coordinator) -> None:
 
 # -- module-level helpers --------------------------------------------------
 def test_first_present() -> None:
-    from hyperloom.orchestrator.loop.conversation import _first_present
+    from hyperloom.orchestrator.loop.inbox_lines import _first_present
 
     assert _first_present({"a": 1, "b": 2}, ("x", "b", "a")) == 2
     assert _first_present({"a": None, "b": 5}, ("a", "b")) == 5
@@ -808,7 +810,7 @@ def test_lifecycle_paths() -> None:
 
 
 def test_format_inbox_event_variants() -> None:
-    from hyperloom.orchestrator.loop.conversation import _format_inbox_event
+    from hyperloom.orchestrator.loop.inbox_lines import _format_inbox_event
     from hyperloom.orchestrator.bus.message_bus import Message
 
     delegated = Message.new(

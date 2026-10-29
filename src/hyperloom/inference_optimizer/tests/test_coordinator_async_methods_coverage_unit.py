@@ -21,6 +21,7 @@ from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.state.objective import TargetGainObjective, TimeOnlyObjective
 from hyperloom.orchestrator.state.task_registry import Task
 from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
+from hyperloom.inference_optimizer.tests._orchestration_prompt import compose_prompt
 
 
 def _heartbeat() -> Intent:
@@ -393,7 +394,7 @@ async def test_compose_prompt_orchestration_with_time_budget(coord: Coordinator)
     coord._run_started_monotonic = time.monotonic() - 60.0
     coord._run_deadline = Deadline.after(600.0)
     coord.shared_state.max_minutes = 60
-    out = (await coord.conversation.compose_prompt("orchestration")).text
+    out = (await compose_prompt(coord.conversation, "orchestration")).text
     assert "SESSION_DIR=" in out
     assert "Mission progress" in out
     assert "Time budget" in out
@@ -405,7 +406,7 @@ async def test_compose_prompt_orchestration_deadline_imminent_warning(coord: Coo
     coord._run_deadline = Deadline.after(60.0)
     coord.shared_state.max_minutes = 60
     coord.shared_state.closing_phase = False
-    out = (await coord.conversation.compose_prompt("orchestration")).text
+    out = (await compose_prompt(coord.conversation, "orchestration")).text
     assert "< 5 min remaining" in out
 
 
@@ -414,7 +415,7 @@ async def test_compose_prompt_kernel(coord: Coordinator) -> None:
     coord._run_started_monotonic = time.monotonic() - 60.0
     coord._run_deadline = Deadline.after(600.0)
     coord.shared_state.max_minutes = 60
-    out_k = (await coord.conversation.compose_prompt("kernel_agent")).text
+    out_k = (await compose_prompt(coord.conversation, "kernel_agent")).text
     assert "SESSION_DIR=" in out_k
 
 
@@ -426,25 +427,27 @@ async def test_compose_prompt_kernel(coord: Coordinator) -> None:
 _ORCHESTRATION_ADVISORIES = (
     ("=== Warm start (Recipe KB T0) ===", "shared_state", "to_warm_start_summary"),
     ("=== Current gaps ===", "shared_state", "to_gaps_summary"),
-    (None, "conversation", "_specialist_findings_block"),
+    (None, "brain", "specialist_findings"),
     ("=== External target gap (advisory) ===", "conversation", "target_gap_advisory_block"),
     ("=== Specialist proposal scores (advisory) ===", "shared_state", "to_proposal_scores_summary"),
     ("=== Priors-match (advisory ordering) ===", "conversation", "_priors_match_advisory_block"),
     ("=== Intervention mix (telemetry) ===", "shared_state", "to_intervention_mix_summary"),
-    ("=== Bottleneck redirect (advisory) ===", "conversation", "_bottleneck_redirect_advisory_block"),
-    ("=== Acceptance threshold (advisory) ===", "conversation", "_acceptance_threshold_advisory_block"),
-    ("=== Discarded escalation hint (advisory) ===", "conversation", "_discarded_escalate_hint_advisory_block"),
+    ("=== Bottleneck redirect (advisory) ===", "brain", "bottleneck_redirect"),
+    ("=== Acceptance threshold (advisory) ===", "brain", "acceptance_threshold"),
+    ("=== Discarded escalation hint (advisory) ===", "brain", "discarded_escalate_hint"),
     ("=== Plateau advisory ===", "conversation", "plateau_advisory_block"),
 )
 
 
 def _stub_advisories(coord: Coordinator, monkeypatch) -> list[str]:
     """Give every advisory a unique non-empty block; return the markers in prompt order."""
-    owners = {"shared_state": coord.shared_state, "conversation": coord.conversation}
+    from hyperloom.brain.orchestrate import prompt as orchestrate_prompt
+
+    owners = {"shared_state": coord.shared_state, "conversation": coord.conversation, "brain": orchestrate_prompt}
     markers = []
     for _heading, owner, producer in _ORCHESTRATION_ADVISORIES:
         marker = f"<{producer}>"
-        monkeypatch.setattr(owners[owner], producer, lambda marker=marker: marker)
+        monkeypatch.setattr(owners[owner], producer, lambda *_a, marker=marker: marker)
         markers.append(marker)
     return markers
 
@@ -453,7 +456,7 @@ def _stub_advisories(coord: Coordinator, monkeypatch) -> list[str]:
 async def test_compose_prompt_keeps_the_orchestration_advisory_order(coord: Coordinator, monkeypatch) -> None:
     markers = _stub_advisories(coord, monkeypatch)
 
-    prompt = (await coord.conversation.compose_prompt("orchestration")).text
+    prompt = (await compose_prompt(coord.conversation, "orchestration")).text
 
     for (heading, _owner, _producer), marker in zip(_ORCHESTRATION_ADVISORIES, markers):
         assert (marker if heading is None else f"{heading}\n{marker}") in prompt
@@ -465,7 +468,7 @@ async def test_compose_prompt_keeps_the_orchestration_advisory_order(coord: Coor
 async def test_compose_prompt_withholds_every_advisory_from_a_reviewer(coord: Coordinator, monkeypatch) -> None:
     markers = _stub_advisories(coord, monkeypatch)
 
-    prompt = (await coord.conversation.compose_prompt("critic")).text
+    prompt = (await compose_prompt(coord.conversation, "critic")).text
 
     assert [marker for marker in markers if marker in prompt] == []
 
@@ -478,7 +481,7 @@ async def test_compose_prompt_drops_the_heading_of_an_advisory_that_produced_not
     _stub_advisories(coord, monkeypatch)
     monkeypatch.setattr(coord.conversation, "plateau_advisory_block", lambda: "")
 
-    prompt = (await coord.conversation.compose_prompt("orchestration")).text
+    prompt = (await compose_prompt(coord.conversation, "orchestration")).text
 
     assert "=== Plateau advisory ===" not in prompt
     # The trajectory digest is shown only on a plateau, so it goes with it.
@@ -496,7 +499,7 @@ async def test_compose_prompt_puts_the_trajectory_review_under_the_plateau_advis
     _stub_advisories(coord, monkeypatch)
     monkeypatch.setattr(trajectory_reviewer, "build_trajectory_digest", lambda *_a, **_k: "<trajectory>")
 
-    prompt = (await coord.conversation.compose_prompt("orchestration")).text
+    prompt = (await compose_prompt(coord.conversation, "orchestration")).text
 
     assert (
         "=== Plateau advisory ===\n<plateau_advisory_block>\n=== Trajectory review (advisory) ===\n<trajectory>"
@@ -924,7 +927,7 @@ def test_is_promotable_result_unchanged_for_reverted_integrate_patch(coord: Coor
 async def test_compose_prompt_renders_the_gap_to_the_gain_objective(coord: Coordinator) -> None:
     coord._current_objective = TargetGainObjective(target_gain_pct=20.0)
     coord.shared_state.cumulative_gain_validated = 5.0
-    text = (await coord.conversation.compose_prompt("orchestration")).text
+    text = (await compose_prompt(coord.conversation, "orchestration")).text
     assert "target_gap_pct=15.00" in text
 
 
@@ -932,7 +935,7 @@ async def test_compose_prompt_renders_the_gap_to_the_gain_objective(coord: Coord
 async def test_compose_prompt_time_only_objective_leaves_no_gap(coord: Coordinator) -> None:
     coord._current_objective = TimeOnlyObjective()
     coord.shared_state.cumulative_gain_validated = 5.0
-    text = (await coord.conversation.compose_prompt("orchestration")).text
+    text = (await compose_prompt(coord.conversation, "orchestration")).text
     assert "target_gap_pct=0.00" in text
 
 

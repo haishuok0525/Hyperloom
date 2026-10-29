@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Shared prompt-structure safety helpers."""
+"""Shared prompt helpers: structure safety, and fitting a growing section to its character budget."""
 
 from __future__ import annotations
 
@@ -22,3 +22,21 @@ def flatten_for_prompt(text: str) -> str:
     if flat.startswith("="):
         flat = "\u2261" + flat[1:]
     return defang_prompt_structure(flat)
+
+
+def fit_to_budget(lines: list[str], budget_chars: int) -> list[str]:
+    """Return the leading ``lines`` that fit in ``budget_chars``.
+
+    The first line is always kept, clipped to the budget, so a backlog led by
+    one oversized entry still drains.
+    """
+    if not lines:
+        return []
+    kept = [lines[0][:budget_chars]]
+    used = len(kept[0])
+    for line in lines[1:]:
+        used += len(line) + 1
+        if used > budget_chars:
+            break
+        kept.append(line)
+    return kept

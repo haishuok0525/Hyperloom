@@ -25,6 +25,7 @@ from hyperloom.orchestrator.prompts.prompt_builder import (
 )
 from hyperloom.inference_optimizer.session.paths import asset_system_prompts_dir, make_session_dir
 from hyperloom.orchestrator.state.task_registry import TaskSpec
+from hyperloom.inference_optimizer.tests._orchestration_prompt import compose_prompt
 
 
 # fixtures
@@ -331,7 +332,7 @@ async def test_compose_prompt_emits_phase_block_for_every_role(
     c = coordinator_with_mocks
     try:
         for role in ("orchestration", "critic"):
-            prompt = (await c.conversation.compose_prompt(role)).text
+            prompt = (await compose_prompt(c.conversation, role)).text
             assert "=== Phase ===" in prompt, f"{role}: phase block missing"
             assert "phase     : PRELUDE" in prompt, f"{role}: phase value missing"
             assert "allowed" in prompt, f"{role}: allowed-actions line missing"
@@ -343,11 +344,11 @@ async def test_compose_prompt_emits_phase_block_for_every_role(
 async def test_compose_prompt_keeps_per_tick_values_out_of_the_context(coordinator_with_mocks):
     c = coordinator_with_mocks
     try:
-        before = await c.conversation.compose_prompt("orchestration")
+        before = await compose_prompt(c.conversation, "orchestration")
         c.shared_state.tick = int(c.shared_state.tick or 0) + 7
         c.shared_state.agent_last_active["orchestration"] = 1.0
         c.shared_state.phase_started_unix = 1_767_225_600.0
-        after = await c.conversation.compose_prompt("orchestration")
+        after = await compose_prompt(c.conversation, "orchestration")
 
         assert after.context == before.context
         assert f"tick={c.shared_state.tick}" in after.turn
@@ -362,9 +363,9 @@ async def test_compose_prompt_keeps_the_session_ledger_out_of_the_context(coordi
     """The ledger moves whenever an action lands, so it must not sit in the cached prefix."""
     c = coordinator_with_mocks
     try:
-        before = await c.conversation.compose_prompt("orchestration")
+        before = await compose_prompt(c.conversation, "orchestration")
         c.shared_state.crash_count = int(c.shared_state.crash_count or 0) + 1
-        after = await c.conversation.compose_prompt("orchestration")
+        after = await compose_prompt(c.conversation, "orchestration")
 
         assert after.context == before.context
         assert after.turn != before.turn
@@ -393,7 +394,7 @@ async def test_compose_prompt_keeps_the_denial_and_proposal_blocks_out_of_the_co
         c.shared_state.specialist_rounds = [
             {"cycle": 0, "domain": "serving_specialist", "gap_canonical_id": "", "proposal_set": [tried, waiting]}
         ]
-        first = await c.conversation.compose_prompt("orchestration")
+        first = await compose_prompt(c.conversation, "orchestration")
         assert "=== Untested proposals (current cycle) ===" in first.turn
         assert tried["name"] in first.turn
 
@@ -411,7 +412,7 @@ async def test_compose_prompt_keeps_the_denial_and_proposal_blocks_out_of_the_co
         }
         c.shared_state.explore_search = {"tested": {"explore-1": dict(tested_row, outcome="REVERT")}}
         c.shared_state.tick = int(c.shared_state.tick or 0) + 1
-        second = await c.conversation.compose_prompt("orchestration")
+        second = await compose_prompt(c.conversation, "orchestration")
 
         assert second.context == first.context
         assert "=== Recent policy denials" in second.turn
@@ -432,7 +433,7 @@ async def test_reactor_turn_hands_a_caching_backend_the_context_as_its_system_pr
     backend = c.backends["orchestration"]
     backend.system_prompt_cached = cached
     try:
-        composed = await c.conversation.compose_prompt("orchestration")
+        composed = await compose_prompt(c.conversation, "orchestration")
         await c.reactor_pass("orchestration", request="ASK")
         (call,) = backend.calls
 
@@ -480,7 +481,7 @@ async def test_compose_prompt_orchestration_renders_warm_start_when_set(
             },
         }
         c.shared_state.save(session_dir)
-        prompt = (await c.conversation.compose_prompt("orchestration")).text
+        prompt = (await compose_prompt(c.conversation, "orchestration")).text
         assert "=== Warm start (Recipe KB T0) ===" in prompt
         assert "tier=exact" in prompt
         assert "best_throughput=2100" in prompt
@@ -494,7 +495,7 @@ async def test_compose_prompt_orchestration_omits_warm_start_when_empty(
 ):
     c = coordinator_with_mocks
     try:
-        prompt = (await c.conversation.compose_prompt("orchestration")).text
+        prompt = (await compose_prompt(c.conversation, "orchestration")).text
         assert "=== Warm start" not in prompt
     finally:
         await c.stop()
@@ -509,7 +510,7 @@ async def test_compose_prompt_omits_specialist_health_block(
     """The periodic specialist block is intentionally gone (see conversation.py)."""
     c = coordinator_with_mocks
     try:
-        prompt = (await c.conversation.compose_prompt(agent_name)).text
+        prompt = (await compose_prompt(c.conversation, agent_name)).text
         assert "Specialist health" not in prompt
         assert "stale" not in prompt.lower()
     finally:

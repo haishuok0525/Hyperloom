@@ -1,17 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""Coordinator prompt composition: inbox rendering, per-tick phase/mission/advisory blocks, MCP context readers, and reactor conversation tracing."""
+"""Coordinator prompt composition: the Critic's prompt, the orchestration view, MCP context readers, the advisory blocks phases share, and reactor conversation tracing."""
 
 from __future__ import annotations
 import asyncio
-import json
 import time
 from dataclasses import dataclass
-from operator import itemgetter
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 from ..bus.gpu_pool import gpus_by_task_sync
-from ..mcp_tool_names import qualified_context_tool_name
 from ..phases import dispatch_order
 from ..phases import machine_state as _phase_state
 from ..policy.projection import resource_pools_summary
@@ -21,13 +18,12 @@ from ..roles.base import BackendTurnResult
 from ..bus.message_bus import Message
 from hyperloom.inference_optimizer.tracelens_md import strip_base64_data_urls
 from hyperloom.inference_optimizer.trace.conversation_trace import ConversationRecord, append_conversation
-from ..state.failure_evidence import UNMEASURED_OUTCOMES, render_failure_line
 from ..state.shared_state import KbInjection
-from hyperloom.common.coerce import to_str_list, to_unix
-from hyperloom.common.prompt_safety import defang_prompt_structure as _defang_prompt_structure
-from hyperloom.common.prompt_safety import flatten_for_prompt as _flatten_for_inbox
+from hyperloom.common.coerce import to_unix
+from hyperloom.common.prompt_safety import fit_to_budget
 
-from .verdicts import serialize_verdict_advisory
+from .inbox_lines import _format_inbox_event
+from .orchestration_view import ORCHESTRATION, orchestration_view
 from ..state.task_registry import Task
 from hyperloom.inference_optimizer.session.session_paths import runs_dir
 from ..collaborator import CoordinatorCollaborator
@@ -44,25 +40,7 @@ log = _logging.getLogger(__name__)
 _RECENT_OUTCOMES_VARIANT_ROWS = 12
 _RECENT_OUTCOMES_LINE_CAP = 120
 
-# Result keys surfaced in delegated_result inbox line; first match wins per group.
-_OUTCOME_GAIN_KEYS: tuple[str, ...] = (
-    "validated_gain_pct",
-    "gain_pct",
-    "predicted_gain_pct",
-    "delta_pct",
-)
-_OUTCOME_TPUT_KEYS: tuple[str, ...] = (
-    "tokens_per_s",
-    "tput",
-    "throughput",
-    "tput_tok_s",
-)
-_OUTCOME_STATUS_KEYS: tuple[str, ...] = ("status", "verdict", "outcome", "runner_status")
-# Notes rendered per inbox line.
-_OUTCOME_NOTES_MAX: int = 3
-# Ceilings for the prompt sections that grow with the session; uncapped, a long run outgrows the context window.
-_FINDINGS_PROMPT_CHARS = 24_000
-_QUESTIONS_PROMPT_CHARS = 6_000
+# Ceiling on the inbox tail one prompt renders; uncapped, a long run outgrows the context window.
 _INBOX_PROMPT_CHARS = 40_000
 # Task kinds that queue for the benchmark lane, in the order the backlog line lists them.
 _BENCH_LANE_KINDS = ("integrate_patch", "explore")
@@ -90,185 +68,8 @@ class TurnPrompt:
     system_prompt: str
     prompt: str
     context: str
-
-
-def _fit_to_budget(lines: list[str], budget_chars: int) -> list[str]:
-    """Return the leading ``lines`` that fit in ``budget_chars``.
-
-    The first line is always kept, clipped to the budget, so a backlog led by
-    one oversized entry still drains.
-    """
-    if not lines:
-        return []
-    kept = [lines[0][:budget_chars]]
-    used = len(kept[0])
-    for line in lines[1:]:
-        used += len(line) + 1
-        if used > budget_chars:
-            break
-        kept.append(line)
-    return kept
-
-
-def _first_present(d: dict[str, Any], keys: tuple[str, ...]) -> Any | None:
-    """Return ``d[k]`` for the first ``k`` in ``keys`` present + non-None."""
-    if not isinstance(d, dict):
-        return None
-    for k in keys:
-        v = d.get(k)
-        if v is not None:
-            return v
-    return None
-
-
-def _defang_alert_payload(value: Any) -> Any:
-    """Recursively defang string leaves of an alert payload (keys untouched)."""
-    if isinstance(value, str):
-        return _defang_prompt_structure(value)
-    if isinstance(value, dict):
-        return {k: _defang_alert_payload(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_defang_alert_payload(v) for v in value]
-    return value
-
-
-def _variant_failure_rows(result: dict[str, Any], max_variant_rows: int) -> list[str]:
-    """Indented rows for the unmeasured per-variant outcomes of a delegated result."""
-    pvos = result.get("per_variant_outcomes")
-    if not isinstance(pvos, list):
-        return []
-    failures = [v for v in pvos if isinstance(v, dict) and str(v.get("outcome") or "").upper() in UNMEASURED_OUTCOMES]
-    rows: list[str] = []
-    for vo in failures[:max_variant_rows]:
-        row = dict(vo)
-        row["error_excerpt"] = _flatten_for_inbox(vo.get("error_excerpt") or vo.get("reason") or "")
-        rows.append("  failure: " + render_failure_line(row, excerpt_chars=120))
-    elided = len(failures) - max_variant_rows
-    if elided > 0:
-        pull = qualified_context_tool_name("get_variant_failures")
-        rows.append(f"  (+{elided} more failures; pull {pull})")
-    return rows
-
-
-def _format_delegated_result(head: str, payload: dict[str, Any], max_variant_rows: int) -> str:
-    """Render a delegated_result entry: one header line plus a row per unmeasured variant."""
-    raw_result = payload.get("result")
-    result: dict[str, Any] = raw_result if isinstance(raw_result, dict) else {}
-    # Only a specialist result carries this key, so its presence is the test.
-    done: dict[str, Any] = result.get("specialist_done") or {}
-    parts = [head, f"kind={payload.get('kind')!r}", f"state={payload.get('state')!r}"]
-    for label, value, quoted in (
-        ("status", _first_present(result, _OUTCOME_STATUS_KEYS), True),
-        ("kept", result.get("kept"), True),
-        ("gain", _first_present(result, _OUTCOME_GAIN_KEYS), False),
-        ("tput", _first_present(result, _OUTCOME_TPUT_KEYS), False),
-    ):
-        if value is not None:
-            parts.append(f"{label}={value!r}" if quoted else f"{label}={value}")
-    summary = str(done.get("summary") or "").strip()
-    if summary:
-        parts.append(f"summary={summary[:400]!r}")
-    if done.get("confidence") is not None:
-        parts.append(f"confidence={done['confidence']}")
-    for label, key in (("findings", "new_findings"), ("questions", "residual_questions")):
-        # A model writes these, so a scalar can arrive where the schema asks for a list: it counts as one.
-        items = to_str_list(done.get(key))
-        if items:
-            parts.append(f"{label}={len(items)}")
-    # Executors that never raise report the failure inside the result envelope, leaving the top-level error None.
-    error = payload.get("error") or result.get("error")
-    if error:
-        parts.append(f"error={str(error)[:200]!r}")
-    # patch_safety_numeric is the Critic's artifact, not a lever here.
-    notes = [str(n) for n in result.get("notes") or () if n and not str(n).startswith("patch_safety_numeric:")]
-    if notes:
-        shown = "; ".join(notes[:_OUTCOME_NOTES_MAX])
-        parts.append(f"notes={shown[:300]!r}")
-    header_line = " ".join(parts)
-    if max_variant_rows <= 0:
-        return header_line
-    return "\n".join([header_line, *_variant_failure_rows(result, max_variant_rows)])
-
-
-def _format_review_verdict(head: str, payload: dict[str, Any]) -> str:
-    """Render a Critic verdict with the counts of the advisory it carries."""
-    parts = [
-        f"{head} target={payload.get('target_proposal_msg_id')!r} "
-        f"verdict={payload.get('verdict')!r} "
-        f"reasoning={str(payload.get('reasoning') or '')[:140]!r}"
-    ]
-    advisory = serialize_verdict_advisory(payload)
-    required_evidence = advisory.get("required_evidence")
-    if required_evidence:
-        shown = "; ".join(str(item) for item in required_evidence[:3])
-        parts.append(f"required_evidence[{len(required_evidence)}]={shown[:140]!r}")
-    risks = advisory.get("risks")
-    if risks:
-        parts.append(f"risks={len(risks)}")
-    advice_text = advisory.get("advice_text")
-    if advice_text:
-        parts.append(f"advice={advice_text[:140]!r}")
-    return " ".join(parts)
-
-
-def _format_inbox_event(m: "Message", *, max_variant_rows: int = 3) -> str:
-    """Render one inbox ``Message`` as a compact, high-signal line."""
-    topic = (m.topic or "").strip()
-    payload = m.payload if isinstance(m.payload, dict) else {}
-    # Canonical inbox header ordering that downstream parsers anchor on.
-    msg_id = f"msg_id={m.msg_id} " if getattr(m, "msg_id", None) else ""
-    head = f"seq={m.seq} {msg_id}from={m.from_agent} topic={topic}"
-
-    if topic == "delegated_result":
-        return _format_delegated_result(head, payload, max_variant_rows)
-    if topic in ("policy_denial", "denial") or (topic == "observation" and payload.get("kind") == "policy_denial"):
-        return (
-            f"{head} action={payload.get('action_name')!r} "
-            f"rule={payload.get('rule')!r} "
-            f"hint={str(payload.get('hint') or '')[:140]!r}"
-        )
-    if topic == "review_verdict":
-        return _format_review_verdict(head, payload)
-    if topic == "observation" and payload.get("kind") is not None:
-        return f"{head} kind={payload.get('kind')!r} payload={payload}"
-    if topic == "alert":
-        # Alert payloads can embed attacker-influenceable server.log excerpts; defang string leaves so a log line
-        # can't inject prompt structure.
-        return f"{head} payload={_defang_alert_payload(payload)}"
-
-    return f"{head} payload={payload}"
-
-
-#: A prompt section: the heading it goes under, or ``None`` for a block that carries its own, and what renders it.
-_AdvisoryRow = tuple[str | None, Callable[["ConversationCollaborator"], str]]
-
-#: The orchestration advisories that hold for the session, so they ride in the cached context. Row order is the
-#: order the model reads the sections in, so it is content; the per-tick blocks follow them, in the turn.
-_ADVISORY_BLOCKS: tuple[_AdvisoryRow, ...] = (
-    ("=== Warm start (Recipe KB T0) ===", lambda c: c.shared_state.to_warm_start_summary()),
-    ("=== Current gaps ===", lambda c: c.shared_state.to_gaps_summary()),
-    (None, lambda c: c._specialist_findings_block()),
-    ("=== External target gap (advisory) ===", lambda c: c.target_gap_advisory_block()),
-    ("=== Specialist proposal scores (advisory) ===", lambda c: c.shared_state.to_proposal_scores_summary()),
-    ("=== Priors-match (advisory ordering) ===", lambda c: c._priors_match_advisory_block()),
-    ("=== Intervention mix (telemetry) ===", lambda c: c.shared_state.to_intervention_mix_summary()),
-    ("=== Bottleneck redirect (advisory) ===", lambda c: c._bottleneck_redirect_advisory_block()),
-    ("=== Acceptance threshold (advisory) ===", lambda c: c._acceptance_threshold_advisory_block()),
-    ("=== Discarded escalation hint (advisory) ===", lambda c: c._discarded_escalate_hint_advisory_block()),
-)
-
-
-def _advisory_sections(owner: "ConversationCollaborator", blocks: tuple[_AdvisoryRow, ...]) -> list[str]:
-    """Render the advisories that produced something, each under its heading."""
-    sections: list[str] = []
-    for heading, produce in blocks:
-        block = produce(owner)
-        if not block:
-            continue
-        if heading:
-            sections.append(heading)
-        sections.append(block)
-    return sections
+    #: The orchestration turn's view, which the brain composes ``prompt`` and ``context`` from; ``None`` otherwise.
+    view: dict[str, Any] | None = None
 
 
 class ConversationCollaborator(CoordinatorCollaborator):
@@ -535,45 +336,6 @@ class ConversationCollaborator(CoordinatorCollaborator):
             log.exception("Coordinator: trajectory review digest failed")
             return ""
 
-    def _orchestration_context_sections(self) -> list[str]:
-        """The advisories only the orchestration agent reads, all of them session-stable."""
-        return _advisory_sections(self, _ADVISORY_BLOCKS)
-
-    async def _orchestration_turn_sections(self) -> list[str]:
-        """The denial summary, proposal queue and plateau pair: only the orchestration agent reads them, and each
-        moves with the session, so they are rendered per tick.
-        """
-        from ..predictor.prompt import queue_block
-        from ..predictor.rows import PROVENANCE
-
-        sections: list[str] = []
-        denial_summary = self.shared_state.to_policy_denial_summary(top_k=6)
-        if denial_summary:
-            sections.append(denial_summary)
-        if (self.shared_state.phase or "").strip().upper() == _phase_state.PHASE_FRAMEWORK_AGENT:
-            # The predictor's rows lead the queue, so its block comes first, under the same section.
-            blocks = (
-                queue_block(self.shared_state, in_grids=await self._explore_grid_fingerprints()),
-                self.shared_state.to_untested_proposals_summary(skip_provenance=PROVENANCE),
-            )
-            untested_block = "\n\n".join(block for block in blocks if block)
-            if untested_block:
-                sections.append("=== Untested proposals (current cycle) ===")
-                sections.append(untested_block)
-            kb_block = await self._kb_prompt_block(untested_block)
-            if kb_block:
-                sections.append(kb_block)
-        plateau_block = self.plateau_advisory_block()
-        if plateau_block:
-            sections.append("=== Plateau advisory ===")
-            sections.append(plateau_block)
-            # Candidate directions are worth the digest's cost only once the session has stopped gaining.
-            trajectory_block = self.trajectory_digest()
-            if trajectory_block:
-                sections.append("=== Trajectory review (advisory) ===")
-                sections.append(trajectory_block)
-        return sections
-
     async def _render_inbox_sections(self, agent_name: str) -> list[str]:
         """Render the inbox tail since this agent's cursor, oldest first, and note what it showed.
 
@@ -583,9 +345,8 @@ class ConversationCollaborator(CoordinatorCollaborator):
         unread = await self.bus.replay_for(agent_name, after_seq=cursor.last_processed_seq)
         rendered = await self._augment_critic_inbox_with_pending(unread) if agent_name == "critic" else unread
         # Only Orchestration acts on variant-level failures; the reviewers do not.
-        variant_rows = 3 if agent_name == "orchestration" else 0
-        inbox_lines = _fit_to_budget(
-            [f"  {_format_inbox_event(m, max_variant_rows=variant_rows)}" for m in rendered],
+        inbox_lines = fit_to_budget(
+            [f"  {_format_inbox_event(m, max_variant_rows=0)}" for m in rendered],
             _INBOX_PROMPT_CHARS,
         )
         unread_ids = {m.msg_id for m in unread}
@@ -604,7 +365,10 @@ class ConversationCollaborator(CoordinatorCollaborator):
         return sections
 
     async def compose_prompt(self, agent_name: str) -> ComposedPrompt:
-        """Compose the prompt for *agent_name*: the session context, and the per-tick blocks ending with the inbox tail."""
+        """Compose the prompt for *agent_name*: the session context, and the per-tick blocks ending with the inbox tail.
+
+        The orchestration prompt is the brain's; see :meth:`compose_turn`.
+        """
         context: list[str] = [f"SESSION_DIR={self.session_dir}"]
         turn: list[str] = []
 
@@ -613,26 +377,6 @@ class ConversationCollaborator(CoordinatorCollaborator):
             turn.append("=== Phase ===")
             turn.append(phase_block)
 
-        if agent_name == "orchestration":
-            turn.append("=== Mission progress ===")
-            turn.append(self.shared_state.to_mission_summary())
-            deadline = self._coord.run_deadline
-            started = self._coord.run_started_monotonic
-            if deadline is not None and started is not None:
-                remaining_min = max(0.0, deadline.remaining() / 60.0)
-                turn.append("=== Time budget ===")
-                turn.append(
-                    f"elapsed={(time.monotonic() - started) / 60.0:.1f}min  remaining={remaining_min:.1f}min  "
-                    f"budget={self.shared_state.max_minutes or 0}min  "
-                    f"closing_phase={self.shared_state.closing_phase}"
-                )
-                if remaining_min <= 5.0 and not self.shared_state.closing_phase:
-                    turn.append(
-                        "WARNING: < 5 min remaining. Avoid new `explore` rounds "
-                        "(which bench every variant on the stack) — they will "
-                        "likely be cut by the deadline. The Coordinator will "
-                        "auto-enqueue `report` when the session closes."
-                    )
         turn.append("=== Tick ===")
         turn.append(self.shared_state.to_tick_summary())
         # The session ledger moves with every action that lands, so it belongs to
@@ -642,19 +386,10 @@ class ConversationCollaborator(CoordinatorCollaborator):
         turn.append(self.shared_state.to_prompt_summary())
         turn.append(f"target_gap_pct={self._coord.target_gap_pct():.2f}")
 
-        # Not wrapped, unlike the advisory blocks below: a latency budget changes
-        # what a KEEP means, so losing it silently would have the model route as
-        # if the session were unconstrained. Pure string assembly, no I/O.
+        # A latency budget changes what a KEEP means, so it is never dropped. Pure string assembly, no I/O.
         context.extend(self.shared_state.to_constraint_sections())
         context.append("=== Resource pools ===")
         context.append(resource_pools_summary(self.shared_state))
-        if agent_name == "orchestration":
-            context.extend(self._orchestration_context_sections())
-            # A denial, a proposal leaving the queue or a plateau count lands between
-            # two ticks, so these blocks follow the ledger into the turn: the cached
-            # prefix ends above them and holds for the session.
-            turn.extend(await self._orchestration_turn_sections())
-
         turn.extend(await self._render_inbox_sections(agent_name))
 
         return ComposedPrompt(context="\n".join(context), turn="\n".join(turn))
@@ -673,12 +408,21 @@ class ConversationCollaborator(CoordinatorCollaborator):
         return True
 
     async def compose_turn(self, agent_name: str, backend: Any) -> TurnPrompt:
-        """The system prompt and prompt for one turn; a backend that caches its system prompt gets the session context in it."""
+        """The system prompt and prompt for one turn; a backend that caches its system prompt gets the session context in it.
+
+        The orchestration turn carries the view the brain composes its prompt from instead of a prompt.
+        """
         system_prompt = await self.load_system_prompt(agent_name)
+        if agent_name == ORCHESTRATION:
+            return TurnPrompt(system_prompt, "", "", view=await orchestration_view(self))
         composed = await self.compose_prompt(agent_name)
         if getattr(backend, "system_prompt_cached", False):
             return TurnPrompt(f"{system_prompt}\n\n{composed.context}", composed.turn, composed.context)
         return TurnPrompt(system_prompt, composed.text, "")
+
+    def mark_rendered(self, agent_name: str, seq: int) -> None:
+        """Note the last message ``agent_name``'s prompt showed; :meth:`advance_rendered_cursor` moves its cursor there."""
+        self._rendered_cursor[agent_name] = seq
 
     async def advance_rendered_cursor(self, agent_name: str) -> None:
         """Advance an agent's read cursor to the last message its prompt rendered."""
@@ -775,83 +519,6 @@ class ConversationCollaborator(CoordinatorCollaborator):
             return "", 0.0
         return dominant_direction(snaps[-1])
 
-    def _bottleneck_redirect_advisory_block(self) -> str:
-        """Render the R3 cyclic bottleneck-redirect advisory (optimisation phase only)."""
-        state = self.shared_state
-        if (state.phase or "").strip().upper() != _phase_state.PHASE_FRAMEWORK_AGENT:
-            return ""
-        saturated = {k: v for k, v in state.saturated_directions.items() if v.get("saturated")}
-        has_switch = state.pending_bottleneck_switch
-        if not has_switch and not saturated:
-            return ""
-        lines: list[str] = []
-        if has_switch:
-            lines.append(
-                "The previous macro-cycle plateaued; redirect this cycle to a "
-                "different bottleneck instead of re-mining the exhausted one."
-            )
-        if saturated:
-            lines.append("Roofline ceiling signal: one or more lever families are saturated; deprioritize them.")
-            lines.extend(
-                f"  saturated_domain={domain} direction={row.get('direction')} "
-                f"within={row.get('within_pct')}% threshold={row.get('threshold_pct')}%"
-                for domain, row in sorted(saturated.items())
-            )
-        if state.last_cycle_bottleneck:
-            lines.append(f"  plateaued_bottleneck={state.last_cycle_bottleneck} (avoid re-targeting)")
-        cur_top = state.current_top_bottleneck()
-        if cur_top:
-            lines.append(f"  current_top_bottleneck={cur_top}")
-        shift = state.bottleneck_shift
-        if shift.get("from") or shift.get("to"):
-            lines.append(
-                f"  bottleneck_shift: {shift.get('from') or 'unknown'} → {shift.get('to') or 'unknown'} "
-                f"(within_delta={shift.get('within_delta')} gap_delta={shift.get('gap_delta')})"
-            )
-        direction, pct = self.dominant_roofline_direction()
-        if direction:
-            from hyperloom.inference_optimizer.roofline_snapshot import BOTTLENECK_DOMAIN_HINTS
-
-            hint = BOTTLENECK_DOMAIN_HINTS.get(direction)
-            suffix = f" → suggested specialist domain={hint[0]} tag={hint[1]}" if hint else ""
-            lines.append(f"  dominant_direction={direction} ({pct:.1f}%){suffix}")
-        lines.append(f"  macro_cycle={state.macro_cycle}")
-        lines.append("Advisory only: pick the domain/tag yourself; this nudges focus, it does not gate dispatch.")
-        return "\n".join(lines)
-
-    def _acceptance_threshold_advisory_block(self) -> str:
-        """Render the decaying acceptance bar and prior measured gains as evidence."""
-        state = self.shared_state
-        keep = _phase_state.resolve_keep_threshold(state)
-        cycle = state.macro_cycle
-        if cycle < 1:
-            return ""
-        stable = keep / 2.0
-        search = state.explore_search
-        entries = [*(search.get("tested") or {}).values(), *(search.get("rejected") or [])]
-        above_bar: list[tuple[str, float]] = []
-        below_bar: list[tuple[str, float]] = []
-        for e in entries:
-            try:
-                g = float(e.get("gain_pct"))
-            except (TypeError, ValueError):
-                continue
-            name = str(e.get("name") or e.get("fingerprint") or "")[:48]
-            (above_bar if g >= keep else below_bar).append((name, g))
-        above_bar.sort(key=itemgetter(1), reverse=True)
-        below_bar.sort(key=itemgetter(1), reverse=True)
-        lines: list[str] = [
-            f"Current acceptance bar (macro_cycle={cycle}): KEEP>={keep:.2f}% stack_stable>={stable:.2f}%.",
-            "Historical results are evidence only — any fingerprint may be re-proposed.",
-        ]
-        if above_bar:
-            lines.append("Prior results above the bar (consider re-proposing if conditions changed):")
-            lines.extend(f"  {name}: prior gain {g:+.2f}% >= {keep:.2f}%" for name, g in above_bar[:8])
-        if below_bar:
-            lines.append("Prior results below the bar (reference):")
-            lines.extend(f"  {name}: prior gain {g:+.2f}% < {keep:.2f}%" for name, g in below_bar[:5])
-        return "\n".join(lines)
-
     def _current_target_gap(self) -> dict[str, Any] | None:
         """Current-best vs the competitor target; None when the advisory is off or no target is set."""
         if not self.shared_state.target_advisory_enabled:
@@ -895,53 +562,6 @@ class ConversationCollaborator(CoordinatorCollaborator):
                     out.append(variant)
         return out
 
-    def _specialist_findings_block(self) -> str:
-        """Render persisted specialist findings, any domain, most recent first.
-
-        Executable proposals are not rendered here: they go through
-        ``=== Untested proposals (current cycle) ===`` alongside every other
-        domain's, which also drops the ones already benched.
-
-        Rows are ordered by recency rather than by the round's self-reported
-        ``confidence``: that field is an audit record of what the specialist
-        claimed, never an input to a decision here.
-
-        ``research_hints.json`` is not read: it holds the sourced subset of
-        these same findings. Each list keeps its newest entries within its
-        character ceiling and counts the rest.
-        """
-        findings: list[str] = []
-        questions: list[str] = []
-        seen_questions: set[str] = set()
-        for row in reversed(self.shared_state.specialist_rounds or []):
-            if not isinstance(row, dict):
-                continue
-            domain_label = str(row.get("domain") or "").strip()
-            for finding in row.get("new_findings") or []:
-                text = json.dumps(finding, sort_keys=True) if isinstance(finding, dict) else str(finding)
-                findings.append(f"- [{domain_label}] {text}")
-            for question in row.get("residual_questions") or []:
-                text = str(question).strip()
-                if text and text not in seen_questions:
-                    seen_questions.add(text)
-                    questions.append(f"- [{domain_label}] {text}")
-        if not findings and not questions:
-            return ""
-
-        lines = ["=== Specialist findings ==="]
-        for title, items, budget_chars in (
-            ("Findings", findings, _FINDINGS_PROMPT_CHARS),
-            ("Residual questions", questions, _QUESTIONS_PROMPT_CHARS),
-        ):
-            if not items:
-                continue
-            shown = _fit_to_budget(items, budget_chars)
-            lines.append(f"{title}:")
-            lines.extend(shown)
-            if len(shown) < len(items):
-                lines.append(f"(+{len(items) - len(shown)} older omitted)")
-        return "\n".join(lines)
-
     def _priors_match_advisory_block(self) -> str:
         """Flag recently proposed variants aligning with proven priors / dominant external gap (advisory ordering)."""
         from hyperloom.inference_optimizer.baseline_comparison import research_hints as _research_hints
@@ -955,22 +575,4 @@ class ConversationCollaborator(CoordinatorCollaborator):
             variants,
             hints,
             primary_gap=primary_gap,
-        )
-
-    def _discarded_escalate_hint_advisory_block(self) -> str:
-        """Render the advisory for an escalate_strategy_change hint that was discarded.
-
-        A phase transition the hint did not drive drops it.
-
-        Returns:
-            The advisory string, or ``""`` when no discarded hint is recorded.
-        """
-        hint = str(self.shared_state.last_discarded_escalate_hint or "")
-        ts = str(self.shared_state.last_discarded_escalate_hint_ts or "")
-        if not hint:
-            return ""
-        return (
-            f"ADVISORY: your escalate_strategy_change hint '{hint}' (at {ts}) was discarded "
-            "because a phase transition it did not drive fired before "
-            "it could be consumed. Re-emit escalate_strategy_change if still needed."
         )

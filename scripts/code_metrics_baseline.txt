@@ -54,7 +54,7 @@ duplicated-lines src/hyperloom/inference_optimizer/tests/test_close_phase_sequen
 duplicated-lines src/hyperloom/inference_optimizer/tests/test_column_kb.py 68
 duplicated-lines src/hyperloom/inference_optimizer/tests/test_common_utils.py 726
 duplicated-lines src/hyperloom/inference_optimizer/tests/test_conc_sweep.py 44
-duplicated-lines src/hyperloom/inference_optimizer/tests/test_coordinator_async_methods_coverage_unit.py 18
+duplicated-lines src/hyperloom/inference_optimizer/tests/test_coordinator_async_methods_coverage_unit.py 15
 duplicated-lines src/hyperloom/inference_optimizer/tests/test_coordinator_sync_helpers_coverage_unit.py 15
 duplicated-lines src/hyperloom/inference_optimizer/tests/test_coverage_gap_units.py 581
 duplicated-lines src/hyperloom/inference_optimizer/tests/test_coverage_margin3_unit.py 146
@@ -337,7 +337,7 @@ function-lines src/hyperloom/orchestrator/knowledge/remote_recipe/values.py::bui
 function-lines src/hyperloom/orchestrator/loop/_baseline_failures.py::BaselineFailureMixin.handle_unpromotable_result 57
 function-lines src/hyperloom/orchestrator/loop/_resume_consistency.py::ResumeConsistencyMixin.enqueue_internal_stack_rebench 51
 function-lines src/hyperloom/orchestrator/loop/coordinator.py::Coordinator.__init__ 89
-function-lines src/hyperloom/orchestrator/loop/coordinator.py::Coordinator._reactor_turn 76
+function-lines src/hyperloom/orchestrator/loop/coordinator.py::Coordinator._reactor_turn 74
 function-lines src/hyperloom/orchestrator/loop/coordinator.py::Coordinator._run_ticks 60
 function-lines src/hyperloom/orchestrator/loop/dispatcher.py::DispatcherCollaborator._admit_gpu_specialist 56
 function-lines src/hyperloom/orchestrator/loop/dispatcher.py::DispatcherCollaborator._reconcile_cancelled_policy_denied_integrate_tasks 54
@@ -618,7 +618,7 @@ module-lines src/hyperloom/orchestrator/actions/executors/roofline.py 1277
 module-lines src/hyperloom/orchestrator/kernel/apply_kernel_patch.py 2644
 module-lines src/hyperloom/orchestrator/kernel/conc_sweep.py 1373
 module-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py 1268
-module-lines src/hyperloom/orchestrator/loop/coordinator.py 1318
+module-lines src/hyperloom/orchestrator/loop/coordinator.py 1316
 module-lines src/hyperloom/orchestrator/loop/dispatcher.py 1426
 module-lines src/hyperloom/orchestrator/loop/intent_router.py 1358
 module-lines src/hyperloom/orchestrator/phases/framework.py 3046
