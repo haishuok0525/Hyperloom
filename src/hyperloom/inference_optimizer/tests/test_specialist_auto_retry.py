@@ -14,10 +14,8 @@ from hyperloom.orchestrator.specialists.runner import (
     SpecialistFailureType,
     classify_specialist_failure,
 )
-from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-    SpecialistPromptInputs,
-    build_specialist_prompts,
-)
+from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+from hyperloom.inference_optimizer.tests._brief import build_specialist_prompts
 
 from .conftest import make_coordinator
 

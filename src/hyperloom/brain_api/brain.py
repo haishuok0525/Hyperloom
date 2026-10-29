@@ -85,7 +85,8 @@ class Port(Protocol):
 
 @runtime_checkable
 class Brain(Protocol):
-    """Decides what the body does next. Called at three points of every tick, always in :class:`CallSite` order."""
+    """Decides what the body does next. Called at three points of every tick, in :class:`CallSite` order, and to brief
+    each specialist the body runs."""
 
     name: str
     contract_version: str
@@ -102,12 +103,17 @@ class Brain(Protocol):
         """The current phase's strategy."""
         ...
 
+    async def on_brief(self, batch: TickBatch, port: Port) -> BrainTurn:
+        """The brief of the specialist about to run, returned as the one ``specialist.run`` call it runs on."""
+        ...
+
 
 #: Call site -> the brain method the body calls there.
 CALL_SITE_METHODS: Mapping[CallSite, str] = {
     CallSite.LLM_TURN: "on_llm_turn",
     CallSite.SETTLEMENT: "on_settlement",
     CallSite.PHASE_PUMP: "on_phase_pump",
+    CallSite.BRIEF: "on_brief",
 }
 
 

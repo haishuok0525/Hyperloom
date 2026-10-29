@@ -401,28 +401,26 @@ def test_gap_provenance_round_trips_through_serialization(tmp_path):
 
 
 def test_research_hints_suppress_cold_start():
-    from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-        SpecialistPromptInputs,
-        _is_cold_start,
-    )
+    from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+    from hyperloom.orchestrator.specialists.domains import get_domain
+    from hyperloom.inference_optimizer.tests._brief import _is_cold_start
 
     inp = SpecialistPromptInputs(
         task_id="t",
-        domain="serving_specialist",
+        domain=get_domain("serving_specialist"),
         research_hints="- enable MTP (source=https://pr/1)",
     )
     assert _is_cold_start(inp) is False
 
 
 def test_kb_section_renders_research_hints_when_kb_empty():
-    from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-        SpecialistPromptInputs,
-        _section_kb_subgraph,
-    )
+    from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+    from hyperloom.orchestrator.specialists.domains import get_domain
+    from hyperloom.inference_optimizer.tests._brief import _section_kb_subgraph
 
     inp = SpecialistPromptInputs(
         task_id="t",
-        domain="serving_specialist",
+        domain=get_domain("serving_specialist"),
         research_hints="- enable MTP (source=https://pr/1)",
     )
     text = "\n".join(_section_kb_subgraph(inp))
@@ -432,25 +430,23 @@ def test_kb_section_renders_research_hints_when_kb_empty():
 
 
 def test_bare_cold_start_still_uses_domain_focus_fallback():
-    from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-        SpecialistPromptInputs,
-        _section_kb_subgraph,
-    )
+    from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+    from hyperloom.orchestrator.specialists.domains import get_domain
+    from hyperloom.inference_optimizer.tests._brief import _section_kb_subgraph
 
-    inp = SpecialistPromptInputs(task_id="t", domain="serving_specialist")
+    inp = SpecialistPromptInputs(task_id="t", domain=get_domain("serving_specialist"))
     text = "\n".join(_section_kb_subgraph(inp))
     assert "COLD-START MODE" in text
 
 
 def test_scout_focus_lists_already_proven():
-    from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-        SpecialistPromptInputs,
-        _focus_research_scout_specialist,
-    )
+    from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+    from hyperloom.orchestrator.specialists.domains import get_domain
+    from hyperloom.inference_optimizer.tests._brief import _focus_research_scout_specialist
 
     inp = SpecialistPromptInputs(
         task_id="t",
-        domain="research_scout_specialist",
+        domain=get_domain("research_scout_specialist"),
         already_proven=[{"name": "mtp_on", "source": "https://pr/1"}],
     )
     text = "\n".join(_focus_research_scout_specialist(inp))

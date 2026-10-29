@@ -5,11 +5,8 @@
 
 from __future__ import annotations
 
-from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-    SpecialistPromptInputs,
-    _section_roofline_evidence,
-    _vendor_substitution_candidates,
-)
+from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+from hyperloom.inference_optimizer.tests._brief import _section_roofline_evidence, _vendor_substitution_candidates
 from hyperloom.orchestrator.specialists.domains import get_domain
 
 

@@ -382,9 +382,9 @@ class SpecialistSpawn:
             tree, only ``--add-dir <workspace>``).
         worktree_base: Base checkout the worktree was branched off; the clean
             base patch harvesting diffs against.
-        system_prompt: System prompt assembled by
-            :func:`specialist_prompt_builder.build_specialist_prompts`.
-        user_prompt: User prompt from the same builder.
+        system_prompt: System prompt of the brief the brain wrote for this
+            dispatch.
+        user_prompt: User prompt of the same brief.
         max_turns: Turn budget, never enforced mechanically here; it reaches
             the specialist only as advisory prompt text baked into
             ``system_prompt``.

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from hyperloom.brain.critic import CRITIC_ROLE, review_turn
+from hyperloom.brain.specialist import brief_turn
 from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
 
 
@@ -36,3 +37,7 @@ class BrainV0:
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
         """No phase strategy has moved yet."""
         return BrainTurn(brain_state=batch.brain_state)
+
+    async def on_brief(self, batch: TickBatch, port: Port) -> BrainTurn:
+        """The specialist brief."""
+        return brief_turn(batch)
