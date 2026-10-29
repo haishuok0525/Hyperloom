@@ -13,6 +13,14 @@ from typing import Any, Mapping
 from hyperloom.brain.critic import CRITIC_ROLE, PATCH_APPROVAL_VERDICTS, SETTLEMENT_KEY, review_turn, settle_verdict
 from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
 from hyperloom.brain.roles import ROLE_INTENTS
+from hyperloom.brain.settle import (
+    CONFIG_DELIVERY_KEY,
+    PATCH_DELIVERY_KEY,
+    REAUTHOR_KEY,
+    settle_config_delivery,
+    settle_patch_delivery,
+    settle_reauthor,
+)
 from hyperloom.brain.specialist import brief_turn
 from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
 
@@ -37,9 +45,16 @@ class BrainV0:
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_settlement(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """What a Critic verdict settles to; no settled task's follow-up has moved yet."""
-        if SETTLEMENT_KEY in batch.snapshot.data:
+        """The follow-up the body asks about: a Critic verdict, a specialist's deliverable or a re-author."""
+        data = batch.snapshot.data
+        if SETTLEMENT_KEY in data:
             return settle_verdict(batch)
+        if PATCH_DELIVERY_KEY in data:
+            return settle_patch_delivery(batch)
+        if CONFIG_DELIVERY_KEY in data:
+            return await settle_config_delivery(batch, port)
+        if REAUTHOR_KEY in data:
+            return await settle_reauthor(batch, port)
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:

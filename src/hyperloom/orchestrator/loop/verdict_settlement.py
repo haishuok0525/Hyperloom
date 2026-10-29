@@ -6,13 +6,12 @@ says what the proposal comes to; the router records and carries out what it sett
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from hyperloom.brain_api import BrainContractError, BrainTurn, CallSite, StateSnapshot, TickBatch, VerdictOutcome
+from hyperloom.brain_api import BrainContractError, BrainTurn, VerdictOutcome
 
-from ..brain_link import DecisionPort, resolve_brain
+from .. import brain_link
 from ..specialists.patch_safety import advisory_only_reason_codes, advisory_rules_govern
 
 # Snapshot key the brain reads a verdict's settlement under.
@@ -61,19 +60,14 @@ async def settle_verdict(request: Mapping[str, Any], *, tick: int, phase: str) -
     Raises:
         BrainContractError: if the brain answers with anything but one well-formed ``verdict.settle``.
     """
-    brain = resolve_brain()
-    batch = TickBatch(
-        call_site=CallSite.SETTLEMENT,
-        tick=tick,
-        now_unix=time.time(),
-        events=(),
-        snapshot=StateSnapshot(phase=phase, data={_SETTLEMENT_KEY: dict(request)}),
-    )
-    turn = await brain.on_settlement(batch, DecisionPort("a verdict settlement"))
+    port = brain_link.DecisionPort("a verdict settlement")
+    turn = await brain_link.ask_settlement(_SETTLEMENT_KEY, request, port=port, tick=tick, phase=phase)
     try:
         return _settlement(turn)
     except (KeyError, TypeError, ValueError) as exc:
-        raise BrainContractError(f"brain {brain.name!r} settled a verdict malformed: {exc!r}") from exc
+        raise BrainContractError(
+            f"brain {brain_link.resolve_brain().name!r} settled a verdict malformed: {exc!r}"
+        ) from exc
 
 
 def _settlement(turn: BrainTurn) -> Settlement:

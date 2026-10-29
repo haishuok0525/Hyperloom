@@ -124,6 +124,24 @@ def _catalogue() -> dict[str, ToolSpec]:
         # verdict, the variants that may run (``None`` for all), every verdict held to a cited rule
         # (``{"variant", "to_verdict", "failure_reason_code"}``), and a :class:`VerdictOutcome`.
         ToolSpec("verdict.settle", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # The settled specialist's deliverable asked about goes to the Critic as an integrate_patch proposal, ``{}``;
+        # the body assembles what it reviews.
+        ToolSpec("review.submit", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # A specialist claimed patches none of which is on disk, ``{"claimed"}``; the body records it.
+        ToolSpec("review.skip", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # The config lever a settled specialist delivered, ``{}`` -> ``{"levers"}`` (empty when none parses).
+        ToolSpec("query.config_levers", ToolKind.QUERY, _STRATEGY_ONLY),
+        # Whether the KB already rejected a config lever, ``{"levers"}`` -> ``{"known_bad"}``.
+        ToolSpec("query.config_lever_known_bad", ToolKind.QUERY, _STRATEGY_ONLY),
+        # Whether a re-author's candidate is already being applied or benchmarked, ``{}`` -> ``{"materializing"}``.
+        ToolSpec("query.candidate_materializing", ToolKind.QUERY, _STRATEGY_ONLY),
+        # A needs_review deliverable is re-authored, ``{"attempt", "critic_feedback"}``: the attempt it is and the
+        # feedback the next authoring round is seeded with.
+        ToolSpec("reauthor.dispatch", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # A needs_review verdict asked for no evidence, so its candidate is closed instead, ``{"rationale"}``.
+        ToolSpec("reauthor.decline", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # A candidate spent its re-author budget and is closed, ``{"attempts", "rationale"}``.
+        ToolSpec("reauthor.exhausted", ToolKind.CONTROL, _STRATEGY_ONLY),
         ToolSpec("phase.request_exit", ToolKind.CONTROL, _BOTH),
         # One intent a model turn emitted, ``{"intent_type", "payload"}``, handed to the body's intent router whole.
         ToolSpec("intent.route", ToolKind.CONTROL, _LLM_ONLY),

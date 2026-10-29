@@ -14,7 +14,7 @@ from hyperloom.brain_api.tools import INTENT_TOOLS, ToolCall
 from hyperloom.brain_api.wire import json_value
 
 #: ``major.minor``. A brain built for another major is refused; a newer minor only adds.
-CONTRACT_VERSION = "1.2"
+CONTRACT_VERSION = "1.3"
 
 
 class BrainContractError(RuntimeError):
@@ -100,8 +100,9 @@ class Brain(Protocol):
         ...
 
     async def on_settlement(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """One settled task, the only event in ``batch``; or one Critic verdict on a pending proposal, under
-        ``snapshot.data["review_verdict_settlement"]``."""
+        """One follow-up of a settlement, named by its ``snapshot.data`` key: a Critic verdict on a pending proposal
+        (``"review_verdict_settlement"``), a settled specialist's patches or config lever (``"specialist_patch_delivery"``,
+        ``"specialist_config_delivery"``), or a needs_review verdict's re-author (``"critic_reauthor"``)."""
         ...
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:

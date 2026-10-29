@@ -13,12 +13,24 @@ from pathlib import Path
 from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from hyperloom.brain_api import BrainTurn
 from hyperloom.common.coerce import first_str, first_text, to_float, to_list, to_mapping
 from hyperloom.common.env_safety import redact_secret_values
 from hyperloom.inference_optimizer.session.optimization_journal import Verdict
 from hyperloom.inference_optimizer import framework_registry
 
 from . import machine_state as _phase_state
+from ..brain_link import DecisionPort, QueryAnswer, ask_settlement, one_decision
+from .specialist_delivery import (
+    CONFIG_DELIVERY_KEY,
+    PATCH_DELIVERY_KEY,
+    REAUTHOR_CLOSES,
+    REAUTHOR_DECISIONS,
+    REAUTHOR_KEY,
+    config_delivery,
+    patch_deliverable,
+    specialist_resolve_bases,
+)
 from ..state.attempt_ledger import AttemptRow, record_attempt_row
 from ..state.failure_evidence import UNMEASURED_OUTCOMES, classify_failure_attribution
 from ..state.task_registry import TaskNotFound, TaskSpec
@@ -30,13 +42,8 @@ if TYPE_CHECKING:
     from ..state.task_registry import Task
     from .machine import Transition
 from ..loop.proposals import PendingProposal, integrate_review_in_flight, record_proposal
-from hyperloom.inference_optimizer.grid_server_args import dedupe_extra_server_args
-from hyperloom.inference_optimizer.grid_server_args import (
-    merge_server_args,
-    tokenize_server_args_preserving_json,
-)
+from hyperloom.inference_optimizer.grid_server_args import tokenize_server_args_preserving_json
 from ..actions.executors import _integrate_vocabulary
-from ..specialists.profile import is_authoring_specialist
 from hyperloom.common.framework_arm import LOCAL_EXPLORE_CANDIDATE_PREFIX
 from hyperloom.orchestrator.lever import LEVER_SOURCE_PATCH, LEVER_UPSTREAM_PR, patch_lever_kind, patch_owner_phase
 from .proposal_bench import CUSTOM_PROPOSAL_DOMAIN, ProposalBench, kb_exposure_of
@@ -45,7 +52,7 @@ log = _logging.getLogger(__name__)
 
 # Specialist attempts a local-exploration candidate gets before the phase moves on.
 _LOCAL_EXPLORE_MAX_ATTEMPTS: int = 3
-# Unified authored-lane max attempts (apply-failure retries + Critic reauthor).
+# Apply-failure re-author attempts an authored candidate gets.
 _AUTHORED_LANE_MAX_ATTEMPTS: int = 3
 
 
@@ -2129,56 +2136,62 @@ class FrameworkPhase(ProposalBench):
             str(reasoning or "")[:200],
         )
 
+    async def _ask_brain(
+        self, key: str, request: Mapping[str, Any], queries: Mapping[str, QueryAnswer] | None = None
+    ) -> BrainTurn:
+        """Ask the brain the settlement follow-up ``request`` names under snapshot key ``key``."""
+        state = self.shared_state
+        port = DecisionPort(f"a {key} settlement", queries)
+        return await ask_settlement(key, request, port=port, tick=int(state.tick or 0), phase=state.phase or "")
+
     async def maybe_reauthor_from_critic_feedback(
         self,
         pending: "PendingProposal",
         advisory: dict[str, Any] | None,
     ) -> None:
-        """Re-author a framework_agent deliverable once, seeding the next authoring round with the Critic's ``required_evidence``."""
-        advisory = to_mapping(advisory)
-        if first_str(getattr(pending, "action_name", "")) != "integrate_patch":
-            return
-        # Resolve the candidate identity FIRST so the two dead-end returns below (no required_evidence / reauthor cap)
-        # can stamp a terminal progress row — a needs_review verdict that neither re-authors nor materializes would
-        # otherwise leave the candidate row-less and re-selected forever.
+        """Ask the brain whether a needs_review framework_agent deliverable is re-authored, seeding the next authoring
+        round with the Critic's feedback, or its candidate closed."""
+        # Resolve the candidate identity FIRST so a needs_review verdict that neither re-authors nor materializes can
+        # stamp a terminal progress row; it would otherwise leave the candidate row-less and re-selected forever.
         payload = to_mapping(getattr(pending, "payload", None))
-        authored = to_mapping(payload.get("params")) if not payload.get("framework_agent_candidate_id") else {}
-        old_sid = first_str(authored.get("specialist_task_id")).strip()
         candidate, audit = await self._reauthor_target(payload)
         cand_id = self._framework_candidate_key(candidate)
         if not cand_id:
             return
         batch_id = first_str(candidate.get("batch_id"), payload.get("batch_id"))
-        required_evidence = [str(x).strip() for x in to_list(advisory.get("required_evidence")) if str(x).strip()]
-        if not required_evidence:
-            # needs_review with nothing to act on: no re-author is possible, so this is terminal for the candidate.
-            self._stamp_framework_progress(
-                ProgressStamp(
-                    candidate_id=cand_id,
-                    batch_id=batch_id,
-                    status="needs_review_no_evidence",
-                    rationale=first_str(advisory.get("advice_text"))[:500],
-                    provenance="critic",
-                )
-            )
-            return
-        if await self._candidate_is_materializing(cand_id):
-            return
         attempts = to_mapping(self.shared_state.specialist_reauthor_attempts)
-        prior = int(attempts.get(cand_id, 0) or 0)
-        if prior >= _AUTHORED_LANE_MAX_ATTEMPTS:
-            await self._close_out_spent_reauthor_budget(pending, cand_id=cand_id, batch_id=batch_id, attempts=prior)
+
+        async def _materializing(_args: Mapping[str, Any]) -> dict[str, Any]:
+            return {"materializing": await self._candidate_is_materializing(cand_id)}
+
+        request = {"advisory": to_mapping(advisory), "prior_attempts": int(attempts.get(cand_id, 0) or 0)}
+        turn = await self._ask_brain(REAUTHOR_KEY, request, {"query.candidate_materializing": _materializing})
+        decision = one_decision(turn, REAUTHOR_DECISIONS, what="a needs_review re-author")
+        if decision is None:
             return
-        attempt = prior + 1
-        attempts[cand_id] = attempt
-        self.shared_state.specialist_reauthor_attempts = attempts
-        critic_feedback = {
-            "required_evidence": required_evidence,
-            "advice_text": first_str(advisory.get("advice_text")),
-            "risks": [str(r).strip() for r in to_list(advisory.get("risks")) if str(r).strip()],
-        }
+        args = decision.args
+        closing = REAUTHOR_CLOSES.get(decision.name)
+        if closing is not None:
+            status, provenance = closing
+            stamp = ProgressStamp(cand_id, status, batch_id, rationale=str(args["rationale"]), provenance=provenance)
+            if decision.name == "reauthor.exhausted":
+                await self._record_spent_reauthor_budget(pending, cand_id, attempts=int(args["attempts"]))
+            self._stamp_framework_progress(stamp)
+        else:
+            attempts[cand_id] = int(args["attempt"])
+            self.shared_state.specialist_reauthor_attempts = attempts
+            await self._dispatch_reauthor(pending, candidate, audit, args)
+
+    async def _dispatch_reauthor(
+        self, pending: "PendingProposal", candidate: dict[str, Any], audit: dict[str, Any], args: Mapping[str, Any]
+    ) -> None:
+        """Enqueue the re-author round the brain decided, ``args`` being its ``reauthor.dispatch``."""
+        cand_id = self._framework_candidate_key(candidate)
+        critic_feedback = dict(args["critic_feedback"])
+        payload = to_mapping(getattr(pending, "payload", None))
+        authored = to_mapping(payload.get("params")) if not payload.get("framework_agent_candidate_id") else {}
         new_task_id = await self._enqueue_framework_agent_authoring_specialist(
-            candidate, audit=audit, reauthor_attempt=attempt, critic_feedback=critic_feedback
+            candidate, audit=audit, reauthor_attempt=int(args["attempt"]), critic_feedback=critic_feedback
         )
         try:
             self.shared_state.save(self.session_dir)
@@ -2190,12 +2203,12 @@ class FrameworkPhase(ProposalBench):
             {
                 "kind": "specialist_reauthor_dispatched",
                 "candidate_id": cand_id,
-                "attempt": attempt,
+                "attempt": int(args["attempt"]),
                 "proposal_msg_id": first_str(getattr(pending, "proposal_msg_id", "")),
-                "old_specialist_task_id": old_sid,
+                "old_specialist_task_id": first_str(authored.get("specialist_task_id")).strip(),
                 "new_specialist_task_id": new_task_id,
                 "verdict": "needs_review",
-                "required_evidence": required_evidence[:6],
+                "required_evidence": list(critic_feedback["required_evidence"])[:6],
             },
         )
 
@@ -2226,10 +2239,8 @@ class FrameworkPhase(ProposalBench):
             if t.kind == "integrate_patch"
         )
 
-    async def _close_out_spent_reauthor_budget(
-        self, pending: "PendingProposal", *, cand_id: str, batch_id: str, attempts: int
-    ) -> None:
-        """Settle a candidate whose re-author budget is spent: the cap is terminal for it."""
+    async def _record_spent_reauthor_budget(self, pending: "PendingProposal", cand_id: str, *, attempts: int) -> None:
+        """Note that a candidate's re-author budget is spent; the cap is terminal for it."""
         await self.bus.record_observation(
             "coordinator",
             "observation",
@@ -2240,15 +2251,6 @@ class FrameworkPhase(ProposalBench):
                 "proposal_msg_id": first_str(getattr(pending, "proposal_msg_id", "")),
                 "verdict": "needs_review",
             },
-        )
-        self._stamp_framework_progress(
-            ProgressStamp(
-                candidate_id=cand_id,
-                batch_id=batch_id,
-                status="reauthor_cap",
-                rationale=f"reauthor attempts >= cap ({_AUTHORED_LANE_MAX_ATTEMPTS})",
-                provenance="pump",
-            )
         )
 
     async def pump(self) -> None:
@@ -2815,64 +2817,34 @@ class FrameworkPhase(ProposalBench):
         task: "Task",
         done_payload: dict[str, Any],
     ) -> None:
-        """Auto-surface a specialist's source patches to the Critic via a synthetic integrate_patch proposal; idempotent per specialist."""
+        """Ask the brain whether a specialist's source patches go to the Critic as a synthetic integrate_patch
+        proposal; idempotent per specialist."""
         patches = to_list(done_payload.get("patches_written"))
         claimed = [str(x) for x in patches][:8]
         sid = first_str(task.task_id).strip()
         if not sid:
             return
-        # Resolve patches_written; submit only when >=1 real file exists.
-        from hyperloom.inference_optimizer.session.session_paths import runs_dir as _runs_dir
-
-        resolve_bases: list[Path] = []
-        if self.session_dir is not None:
-            spec_root = _runs_dir(Path(self.session_dir), "specialist", sid)
-            resolve_bases = [spec_root / "worktree", spec_root]
-        existing_patches = [str(p) for p in patches if _patches_on_disk(Path(str(p)), resolve_bases)]
-        # A non-diff tuned artifact is also a routable deliverable; route it like a patch.
-        routable_artifacts = _resolvable_artifacts_from_done(done_payload, resolve_bases)
-        if not existing_patches and not routable_artifacts:
-            if patches:
-                await self.bus.record_observation(
-                    "coordinator",
-                    "observation",
-                    {
-                        "kind": "specialist_patch_autosubmit_skipped_no_files",
-                        "specialist_task_id": sid,
-                        "claimed": claimed,
-                    },
-                )
+        resolve_bases = specialist_resolve_bases(self.session_dir, sid)
+        delivery = {
+            "claimed": claimed,
+            "patches_on_disk": any(_patches_on_disk(Path(str(p)), resolve_bases) for p in patches),
+            # A non-diff tuned artifact is also a routable deliverable; it is routed like a patch.
+            "artifacts_on_disk": bool(_resolvable_artifacts_from_done(done_payload, resolve_bases)),
+        }
+        turn = await self._ask_brain(PATCH_DELIVERY_KEY, delivery)
+        decision = one_decision(turn, ("review.submit", "review.skip"), what="a specialist's patches")
+        if decision is None:
+            return
+        if decision.name == "review.skip":
+            skipped = {"kind": "specialist_patch_autosubmit_skipped_no_files", "specialist_task_id": sid}
+            await self.bus.record_observation("coordinator", "observation", {**skipped, **decision.args})
             return
         spec_params = to_mapping(getattr(task, "params", None))
-        # The lane, not the deliverable's own ``atomic`` flag, decides whether a companion lever rides with the patch.
-        is_enablement_round = bool(spec_params.get("enablement"))
-        companion_levers = _framework_config_levers_from_done(
-            done_payload, levers_ride_with_patches=is_enablement_round
-        )
-        round_args = first_str(companion_levers.get("extra_server_args"))
-        round_envs = to_mapping(companion_levers.get("extra_envs"))
-        if is_enablement_round:
-            # A flag the architecture requires stays required once a later round moves on to a different blocker, so
-            # the round launches from everything enablement has established, with its own values winning a collision.
-            established = to_mapping(getattr(self.shared_state.enablement, "accepted_config", None))
-            round_envs = {
-                **{str(k): str(v) for k, v in to_mapping(established.get("extra_envs")).items()},
-                **round_envs,
-            }
-            round_args = dedupe_extra_server_args(
-                merge_server_args(first_str(established.get("extra_server_args")), round_args)
-            )
-        deliverable: dict[str, Any] = {}
-        if round_args or round_envs:
-            deliverable["extra_server_args"] = round_args
-            deliverable["extra_envs"] = round_envs
-        if spec_params.get("framework_agent_authoring"):
-            deliverable["framework_agent_authoring"] = True
         await self._submit_integrate_review(
             sid,
             spec_params,
             done_payload,
-            deliverable,
+            self._patch_deliverable(spec_params, done_payload),
             observation={
                 "kind": "specialist_patch_autosubmitted_for_review",
                 "patches": claimed,
@@ -2885,54 +2857,52 @@ class FrameworkPhase(ProposalBench):
             },
         )
 
+    def _patch_deliverable(self, spec_params: Mapping[str, Any], done_payload: dict[str, Any]) -> dict[str, Any]:
+        """The config a specialist's patches are reviewed with."""
+        # The lane, not the deliverable's own ``atomic`` flag, decides whether a companion lever rides with the patch.
+        is_enablement_round = bool(spec_params.get("enablement"))
+        companion = _framework_config_levers_from_done(done_payload, levers_ride_with_patches=is_enablement_round)
+        established = (
+            to_mapping(getattr(self.shared_state.enablement, "accepted_config", None)) if is_enablement_round else None
+        )
+        return patch_deliverable(companion, established, authoring=bool(spec_params.get("framework_agent_authoring")))
+
     async def maybe_autosubmit_framework_config(
         self,
         *,
         task: "Task",
         done_payload: dict[str, Any],
     ) -> None:
-        """Route a FRAMEWORK config-lever deliverable through integrate_patch.
+        """Ask the brain whether a FRAMEWORK config-lever deliverable is routed through integrate_patch.
 
-        Companion to :meth:`maybe_autosubmit_specialist_patches`: fires when a
-        FRAMEWORK authoring or ENABLEMENT specialist returns NO source patch but a config-lever
-        ``proposal_set`` (extra_args / extra_envs). The levers go into
-        integrate_patch's ``config_changes`` channel (apply + bench + accuracy
-        gate + KEEP/REVERT), which owns the terminal FRAMEWORK row. Idempotent
-        per specialist.
+        Companion to :meth:`maybe_autosubmit_specialist_patches`, for a FRAMEWORK authoring or ENABLEMENT specialist
+        that returns NO source patch. The levers go into integrate_patch's ``config_changes`` channel (apply + bench +
+        accuracy gate + KEEP/REVERT), which owns the terminal FRAMEWORK row. Idempotent per specialist.
 
         Args:
             task: The completed authoring specialist task.
             done_payload: Its ``specialist_done`` payload.
         """
         spec_params = getattr(task, "params", None) or {}
-        if not is_authoring_specialist(spec_params):
-            return
-        # A patch deliverable is handled by the patch autosubmit bridge.
-        patches = done_payload.get("patches_written") or []
-        if isinstance(patches, list) and patches:
-            return
-        config_levers = _framework_config_levers_from_done(done_payload)
-        is_enablement = bool(spec_params.get("enablement"))
-        build_request = done_payload.get("needs_targeted_build")
-        if (
-            is_enablement
-            and isinstance(build_request, dict)
-            and build_request
-            and not config_levers
-            and not done_payload.get("setup_commands")
-            and not done_payload.get("artifacts_written")
-        ):
-            return
-        # Route only when there are config levers to test, except for an
-        # ENABLEMENT round, which always routes: a round that does not reach
-        # integrate_patch never reports what its boot did.
-        if not config_levers and not is_enablement:
-            return
         sid = first_text(task.task_id)
-        if not sid:
+        parsed: list[dict[str, Any]] = []
+
+        def _levers() -> dict[str, Any]:
+            if not parsed:
+                parsed.append(_framework_config_levers_from_done(done_payload))
+            return parsed[0]
+
+        async def _config_levers(_args: Mapping[str, Any]) -> dict[str, Any]:
+            return {"levers": _levers()}
+
+        async def _known_bad(args: Mapping[str, Any]) -> dict[str, Any]:
+            return {"known_bad": self._config_lever_known_bad(dict(args["levers"]))}
+
+        queries = {"query.config_levers": _config_levers, "query.config_lever_known_bad": _known_bad}
+        turn = await self._ask_brain(CONFIG_DELIVERY_KEY, config_delivery(sid, spec_params, done_payload), queries)
+        if one_decision(turn, ("review.submit",), what="a specialist's config lever") is None:
             return
-        if config_levers and self._config_lever_known_bad(config_levers):
-            return
+        config_levers = _levers()
         # Empty, or the str args and dict envs _config_lever_from_proposal builds.
         extra_server_args = config_levers.get("extra_server_args", "")
         extra_envs = dict(config_levers.get("extra_envs", {}))

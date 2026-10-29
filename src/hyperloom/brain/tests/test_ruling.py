@@ -76,6 +76,7 @@ async def test_a_verdict_map_is_held_per_variant_and_collapses_to_the_variants_t
         ("reject", "integrate_patch", {"params": {"enablement": True}}, VerdictOutcome.REARM_ENABLEMENT),
         ("reject", "explore", {"params": {"enablement": True}}, VerdictOutcome.NONE),
         ("needs_review", "integrate_patch", {}, VerdictOutcome.REAUTHOR),
+        ("needs_review", "explore", {}, VerdictOutcome.NONE),
         ("redirect", "specialist", {}, VerdictOutcome.NONE),
     ],
 )

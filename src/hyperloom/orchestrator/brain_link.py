@@ -6,9 +6,19 @@
 from __future__ import annotations
 
 import threading
-from typing import Any
+import time
+from typing import Any, Awaitable, Callable, Collection, Mapping
 
-from hyperloom.brain_api import Brain, ToolCall, TurnFailed
+from hyperloom.brain_api import (
+    Brain,
+    BrainContractError,
+    BrainTurn,
+    CallSite,
+    StateSnapshot,
+    TickBatch,
+    ToolCall,
+    TurnFailed,
+)
 from hyperloom.brain_api.loader import load_brain
 from hyperloom.plugs import active
 
@@ -29,13 +39,47 @@ def resolve_brain() -> Brain:
         return _default
 
 
+#: Answers one query a deciding brain asks, from the call's args.
+QueryAnswer = Callable[[Mapping[str, Any]], Awaitable[dict[str, Any]]]
+
+
 class DecisionPort:
-    """What a brain call that only decides is lent: no model and no tool."""
+    """What a brain call that only decides is lent: no model, and no tool beyond the queries it answers."""
 
     llm: dict[str, Any] = {}
 
-    def __init__(self, what: str) -> None:
+    def __init__(self, what: str, queries: Mapping[str, QueryAnswer] | None = None) -> None:
         self._what = what
+        self._queries = dict(queries or {})
 
     async def call(self, call: ToolCall) -> dict[str, Any]:
-        raise TurnFailed(f"{self._what} cannot call {call.name!r}")
+        answer = self._queries.get(call.name)
+        if answer is None:
+            raise TurnFailed(f"{self._what} cannot call {call.name!r}")
+        return await answer(call.args)
+
+
+async def ask_settlement(
+    key: str, request: Mapping[str, Any], *, port: DecisionPort, tick: int, phase: str
+) -> BrainTurn:
+    """Ask the brain the settlement follow-up ``request`` names under snapshot key ``key``."""
+    batch = TickBatch(
+        call_site=CallSite.SETTLEMENT,
+        tick=tick,
+        now_unix=time.time(),
+        events=(),
+        snapshot=StateSnapshot(phase=phase, data={key: dict(request)}),
+    )
+    return await resolve_brain().on_settlement(batch, port)
+
+
+def one_decision(turn: BrainTurn, allowed: Collection[str], *, what: str) -> ToolCall | None:
+    """The one decision ``turn`` makes about ``what``, ``None`` when it makes none.
+
+    Raises:
+        BrainContractError: if the turn makes more than one, or one outside ``allowed``.
+    """
+    calls = turn.tool_calls
+    if len(calls) > 1 or any(c.name not in allowed for c in calls):
+        raise BrainContractError(f"brain decided {what} with {[c.name for c in calls]}, not one of {sorted(allowed)}")
+    return calls[0] if calls else None
