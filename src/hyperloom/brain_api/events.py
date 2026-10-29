@@ -38,7 +38,7 @@ class CallSite(str, Enum):
 
     #: The orchestration and critic model turns.
     LLM_TURN = "llm_turn"
-    #: Once per task the dispatcher settles: autosubmit, verdict follow-up.
+    #: Once per task the dispatcher settles and per Critic verdict on a proposal: autosubmit, verdict follow-up.
     SETTLEMENT = "settlement"
     #: The phase pump: the current phase's deterministic strategy.
     PHASE_PUMP = "phase_pump"

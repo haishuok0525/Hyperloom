@@ -34,6 +34,7 @@ from hyperloom.inference_optimizer.protocol.action_surfaces import (
     COORDINATOR_OWNED_KERNEL_REQUEST_KINDS,
     KERNEL_AGENT_OWNED_ACTIONS,
 )
+from ..brain_link import resolve_brain
 from ..mcp_tool_names import agent_tool_grant, qualified_context_tool_name
 from .projection import (
     RULE_GPU_EXCEEDS_CAPACITY,
@@ -101,13 +102,9 @@ def research_lane_ceiling() -> int:
     return RESEARCH_LANE_CEILING_FALLBACK
 
 
-# Verdicts that allow ``integrate_patch`` without an operator override (``advise`` = soft approval, ``approve`` = green light).
-INTEGRATE_PATCH_PERMISSIVE_VERDICTS: frozenset[str] = frozenset(
-    {
-        "approve",
-        "advise",
-    }
-)
+def integrate_patch_permissive_verdicts() -> frozenset[str]:
+    """The Critic verdicts that let ``integrate_patch`` apply a patch: the brain's to decide."""
+    return frozenset(resolve_brain().patch_approval_verdicts)
 
 
 # Source roles allowed to dispatch a specialist via ``delegate{action='specialist'}``.
@@ -753,7 +750,7 @@ class PolicyGate:
         Raises:
             PolicyDenied: when ``params`` is malformed, name no review
                 subject, no Critic verdict is on record for it, or the verdict
-                is not in :data:`INTEGRATE_PATCH_PERMISSIVE_VERDICTS`.
+                is not in :func:`integrate_patch_permissive_verdicts`.
         """
         params = payload.get("params") or {}
         if not isinstance(params, dict):
@@ -804,12 +801,12 @@ class PolicyGate:
                     "is recorded on SharedState.specialist_patch_verdicts."
                 ),
             )
-        if verdict.lower() not in INTEGRATE_PATCH_PERMISSIVE_VERDICTS:
+        permissive = integrate_patch_permissive_verdicts()
+        if verdict.lower() not in permissive:
             raise PolicyDenied(
                 f"integrate_patch: Critic verdict for subject "
                 f"{sid!r} is {verdict!r}; integrate_patch only "
-                f"runs on "
-                f"{sorted(INTEGRATE_PATCH_PERMISSIVE_VERDICTS)!r}",
+                f"runs on {sorted(permissive)!r}",
                 rule="integrate_patch_requires_critic_verdict",
                 hint=(
                     "Either ask the Critic to re-review (next "
@@ -1534,7 +1531,7 @@ def validate_freeform_wave_task(task: Any, *, index: int) -> str:
 
 
 __all__ = [
-    "INTEGRATE_PATCH_PERMISSIVE_VERDICTS",
+    "integrate_patch_permissive_verdicts",
     "KERNEL_AGENT_OWNED_ACTIONS",
     "PATH_LIKE_FIELDS",
     "PRUNE_BRANCH_ALLOWED_SCOPES",

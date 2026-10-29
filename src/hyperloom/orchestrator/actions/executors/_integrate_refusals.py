@@ -27,7 +27,7 @@ from hyperloom.orchestrator.measurement.runtime_findings import (
     load_runtime_findings,
 )
 
-from ...policy.gate import INTEGRATE_PATCH_PERMISSIVE_VERDICTS
+from ...policy.gate import integrate_patch_permissive_verdicts
 from ...specialists.patch_safety import patch_targets_missing
 
 
@@ -194,7 +194,7 @@ def _enforce_critic_gate(
         recorded = shared_state.get_specialist_patch_verdict(subject)
     except AttributeError:
         recorded = ""
-    if (recorded or "").lower() not in INTEGRATE_PATCH_PERMISSIVE_VERDICTS:
+    if (recorded or "").lower() not in integrate_patch_permissive_verdicts():
         _detail = f"verdict {recorded!r}" if recorded else "no Critic verdict on record"
         # No side effect has occurred yet; reject cleanly (nothing to revert).
         return {

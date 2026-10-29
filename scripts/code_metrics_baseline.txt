@@ -344,7 +344,7 @@ function-lines src/hyperloom/orchestrator/loop/dispatcher.py::DispatcherCollabor
 function-lines src/hyperloom/orchestrator/loop/dispatcher.py::DispatcherCollaborator.reap_dispatched_task 61
 function-lines src/hyperloom/orchestrator/loop/intent_router.py::IntentRouter._create_delegated_task 59
 function-lines src/hyperloom/orchestrator/loop/intent_router.py::IntentRouter._handle_request 57
-function-lines src/hyperloom/orchestrator/loop/intent_router.py::IntentRouter._handle_single_verdict 75
+function-lines src/hyperloom/orchestrator/loop/intent_router.py::IntentRouter._handle_single_verdict 70
 function-lines src/hyperloom/orchestrator/loop/intent_router.py::IntentRouter.handle_delegate 55
 function-lines src/hyperloom/orchestrator/loop/proposals.py::ProposalsCollaborator.materialize_approved_proposal 63
 function-lines src/hyperloom/orchestrator/loop/sub_agent_runner.py::SubAgentRunner._execute 58
@@ -620,12 +620,12 @@ module-lines src/hyperloom/orchestrator/kernel/conc_sweep.py 1373
 module-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py 1268
 module-lines src/hyperloom/orchestrator/loop/coordinator.py 1316
 module-lines src/hyperloom/orchestrator/loop/dispatcher.py 1426
-module-lines src/hyperloom/orchestrator/loop/intent_router.py 1358
+module-lines src/hyperloom/orchestrator/loop/intent_router.py 1304
 module-lines src/hyperloom/orchestrator/phases/framework.py 3046
 module-lines src/hyperloom/orchestrator/phases/kernel.py 3970
 module-lines src/hyperloom/orchestrator/phases/machine_state.py 1914
 module-lines src/hyperloom/orchestrator/phases/prelude.py 2477
-module-lines src/hyperloom/orchestrator/policy/gate.py 1550
+module-lines src/hyperloom/orchestrator/policy/gate.py 1547
 module-lines src/hyperloom/orchestrator/specialists/runner.py 1465
 module-lines src/hyperloom/orchestrator/specialists/subprocess_.py 1337
 module-lines src/hyperloom/orchestrator/state/shared_state.py 2275

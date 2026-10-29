@@ -40,6 +40,7 @@ from hyperloom.brain_api.tools import (
     ToolCall,
     ToolKind,
     ToolSpec,
+    VerdictOutcome,
     tool_for_action,
 )
 from hyperloom.brain_api.wire import WireError
@@ -70,6 +71,7 @@ __all__ = [
     "ToolSpec",
     "TurnFailed",
     "Verdict",
+    "VerdictOutcome",
     "WireError",
     "tool_for_action",
     "validate_brain",

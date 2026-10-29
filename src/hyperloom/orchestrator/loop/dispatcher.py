@@ -37,7 +37,7 @@ from ..phases import dispatch_order, machine_state as _phase_state
 from ..bus.message_bus import Message
 from ..kernel.request_handlers import get_handler
 from ..policy.gate import (
-    INTEGRATE_PATCH_PERMISSIVE_VERDICTS,
+    integrate_patch_permissive_verdicts,
     PolicyDenied,
     SPECIALIST_FROM_AGENT_PREFIX,
 )
@@ -514,7 +514,7 @@ class DispatcherCollaborator(CoordinatorCollaborator):
             if not sid:
                 continue
             verdict = str(get_verdict(sid) or "").strip().lower()
-            if verdict not in INTEGRATE_PATCH_PERMISSIVE_VERDICTS:
+            if verdict not in integrate_patch_permissive_verdicts():
                 continue
             try:
                 gate.validate_dispatched_task(task.kind, params)

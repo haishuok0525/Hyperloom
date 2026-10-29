@@ -16,13 +16,15 @@ from hyperloom.orchestrator.roles.agent_role import default_role_registry
 from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
 from hyperloom.orchestrator.policy.gate import (
     INTEGRATE_PATCH_ACTION_NAME,
-    INTEGRATE_PATCH_PERMISSIVE_VERDICTS,
     PolicyDenied,
     PolicyGate,
+    integrate_patch_permissive_verdicts,
 )
 from hyperloom.orchestrator.state.shared_state import SharedState
 from hyperloom.orchestrator.loop.sub_agent_runner import RunnerContext
 from hyperloom.orchestrator.state.task_registry import Task
+
+INTEGRATE_PATCH_PERMISSIVE_VERDICTS = integrate_patch_permissive_verdicts()
 
 
 # 1. SharedState ledger

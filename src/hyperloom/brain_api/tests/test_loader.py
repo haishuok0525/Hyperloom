@@ -28,6 +28,7 @@ class Brain:
     name = "fake"
     contract_version = {version!r}
     role_intents = {{"orchestration": ("send_message", "delegate")}}
+    patch_approval_verdicts = ("approve",)
 
     def __init__(self, config):
         self.config = config
@@ -101,6 +102,22 @@ def test_a_brain_missing_an_async_call_site_is_refused(brain_module) -> None:
 def test_a_brain_that_does_not_say_what_each_role_may_emit_is_refused(brain_module, role_intents, fault) -> None:
     source = _GOOD.format(version=CONTRACT_VERSION).replace(
         'role_intents = {"orchestration": ("send_message", "delegate")}', f"role_intents = {role_intents}"
+    )
+    with pytest.raises(BrainContractError, match=fault):
+        load_brain(brain_module(source))
+
+
+@pytest.mark.parametrize(
+    ("verdicts", "fault"),
+    [
+        ("None", "no patch_approval_verdicts"),
+        ('"approve"', "no patch_approval_verdicts"),
+        ('("approve", "")', "not all verdict names"),
+    ],
+)
+def test_a_brain_that_does_not_say_which_verdicts_approve_a_patch_is_refused(brain_module, verdicts, fault) -> None:
+    source = _GOOD.format(version=CONTRACT_VERSION).replace(
+        'patch_approval_verdicts = ("approve",)', f"patch_approval_verdicts = {verdicts}"
     )
     with pytest.raises(BrainContractError, match=fault):
         load_brain(brain_module(source))
