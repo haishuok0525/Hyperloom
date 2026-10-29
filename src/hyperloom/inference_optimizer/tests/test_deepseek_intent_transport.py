@@ -23,9 +23,11 @@ from hyperloom.common.deepseek_session import (
 )
 from hyperloom.inference_optimizer.protocol.intent import IntentType, NoIntentEmitted
 from hyperloom.orchestrator.roles import deepseek as deepseek_module
-from hyperloom.orchestrator.roles.agent_role import _ORCHESTRATION_INTENTS
+from hyperloom.orchestrator.roles.agent_role import default_role_registry
 from hyperloom.orchestrator.roles.base import LLMCallFailed
 from hyperloom.orchestrator.roles.deepseek import DeepSeekBackend, decode_intent_envelope
+
+_ORCHESTRATION_INTENTS = default_role_registry()["orchestration"].allowed_intents
 
 _KERNEL_REQUEST_PAYLOAD = {
     "target_agent": "kernel_agent",

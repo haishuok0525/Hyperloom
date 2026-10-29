@@ -9,7 +9,7 @@ import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -907,6 +907,21 @@ def test_default_runtime_caller_builds_the_cli_command(monkeypatch: pytest.Monke
     ]
     assert captured["kwargs"]["cwd"] == str(tmp_path)
     assert captured["kwargs"]["env"] == {"X": "1"}
+
+
+def test_commit_review_names_each_verdict_the_brain_asked_the_kb_to_keep(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    commands: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        commands.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    call = _runtime_call(tmp_path, "commit-review", tmp_path / "review.json")
+    _default_runtime_caller(replace(call, kb_write_targets=("p1", "p4")))
+    assert commands[0][-4:] == ["--kb-write", "p1", "--kb-write", "p4"]
 
 
 def test_default_runtime_caller_commit_review_requires_review_path(tmp_path: Path):
@@ -2306,6 +2321,7 @@ from hyperloom.brain_api import BrainTurn, ToolCall
 class Brain:
     name = "scripted"
     contract_version = "1.0"
+    role_intents = {}
 
     def __init__(self, config):
         self.tool = config.get("tool", "verdict.record")
@@ -2315,6 +2331,7 @@ class Brain:
         target = prepared["judge_bundle"]["proposals"][0]["msg_id"]
         review = {"review_verdicts": [{"target_proposal_msg_id": target, "verdict": "reject", "reasoning": "scripted"}]}
         args = {"review": review, "raw_text": "scripted", "finish": "scripted", "judge_bundle": prepared["judge_bundle"]}
+        args["kb_writes"] = []
         if self.tool != "verdict.record":
             args = {}
         return BrainTurn(tool_calls=(ToolCall(self.tool, args),))

@@ -308,8 +308,11 @@ class DecisionReviewer:
         self,
         raw_request: dict[str, Any],
         review: dict[str, Any],
+        *,
+        kb_write_targets: frozenset[str] = frozenset(),
     ) -> CommitOutcome:
-        """Validate and commit a SKILL-produced review (phase 2)."""
+        """Validate and commit a SKILL-produced review (phase 2), writing a KB lesson for each verdict whose target is
+        in ``kb_write_targets``."""
         req = parse_request(raw_request)
         self._populate_inbox(req)
         if not isinstance(review, dict):
@@ -320,7 +323,7 @@ class DecisionReviewer:
             decision_id=req.decision_id,
         )
         session_ctx = self.session_memory.load_context(req.session_id)
-        self._commit_coordinator_inbox(req, review, outcome, session_ctx)
+        self._commit_coordinator_inbox(req, review, outcome, session_ctx, kb_write_targets)
         return outcome
 
     # Implementation helpers
@@ -380,6 +383,7 @@ class DecisionReviewer:
         review: dict[str, Any],
         outcome: CommitOutcome,
         session_ctx: dict[str, Any],
+        kb_write_targets: frozenset[str],
     ) -> None:
         """Commit a coordinator-inbox review into an intent envelope."""
         verdicts_raw = review.get("review_verdicts")
@@ -413,8 +417,7 @@ class DecisionReviewer:
                 if isinstance(part, str) and part.strip()
             ]
             advice_text = "\n\n".join(advice_parts)
-            verdict_review = _review_verdict(item, target, verdict, advice_text)
-            reviews.append(verdict_review)
+            reviews.append(verdict_review := _review_verdict(item, target, verdict, advice_text))
             try:
                 intents.append(build_review_verdict_intent(verdict_review))
             except IntentEnvelopeValidationError as exc:
@@ -434,7 +437,8 @@ class DecisionReviewer:
                     "kb_evidence": verdict_review.kb_evidence,
                 },
             )
-            self._maybe_write_kb_for_verdict(item, req, session_ctx, outcome)
+            if target in kb_write_targets:
+                self._write_kb_for_verdict(item, req, session_ctx, outcome)
 
         # Every advisory also goes out as a standalone advice message, whatever the target's verdict (or if
         # untargeted); targeted bodies are already inlined into the verdict's ``advice_text`` above.
@@ -449,20 +453,14 @@ class DecisionReviewer:
 
         outcome.intent_envelope = build_envelope(intents).to_dict()
 
-    def _maybe_write_kb_for_verdict(
+    def _write_kb_for_verdict(
         self,
         verdict_item: dict[str, Any],
         req: CriticRequest,
         session_ctx: dict[str, Any],
         outcome: CommitOutcome,
     ) -> None:
-        """Write a KB lesson for a verdict when the SKILL opted in."""
-        verdict = verdict_item.get("verdict")
-        if verdict not in {"reject", "redirect", "approve"}:
-            return
-        # Only persist when the SKILL opted in.
-        if not verdict_item.get("persist_to_kb"):
-            return
+        """Write a KB lesson for a verdict."""
         res = self.kb_writer.write_verdict(
             verdict=verdict_item,
             packet_context=req.context,

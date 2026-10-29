@@ -384,7 +384,7 @@ function-lines src/hyperloom/orchestrator/policy/gate.py::PolicyGate._validate_s
 function-lines src/hyperloom/orchestrator/policy/gate.py::PolicyGate._validate_warm_replay_targets 62
 function-lines src/hyperloom/orchestrator/prompts/prompt_builder.py::_section_decision_framework 84
 function-lines src/hyperloom/orchestrator/roles/claude.py::ClaudeBackend.run 62
-function-lines src/hyperloom/orchestrator/roles/critic_agent.py::CriticAgentBackend.run 89
+function-lines src/hyperloom/orchestrator/roles/critic_agent.py::CriticAgentBackend.run 87
 function-lines src/hyperloom/orchestrator/specialists/agent_cli_config.py::_codex_mcp_config 63
 function-lines src/hyperloom/orchestrator/specialists/dispatch.py::SpecialistDispatchCollaborator.maybe_auto_retry_specialist 101
 function-lines src/hyperloom/orchestrator/specialists/dispatch.py::SpecialistDispatchCollaborator.maybe_force_stalled_domain_specialist 56
@@ -625,7 +625,7 @@ module-lines src/hyperloom/orchestrator/phases/framework.py 3046
 module-lines src/hyperloom/orchestrator/phases/kernel.py 3970
 module-lines src/hyperloom/orchestrator/phases/machine_state.py 1914
 module-lines src/hyperloom/orchestrator/phases/prelude.py 2477
-module-lines src/hyperloom/orchestrator/policy/gate.py 1564
+module-lines src/hyperloom/orchestrator/policy/gate.py 1550
 module-lines src/hyperloom/orchestrator/specialists/runner.py 1465
 module-lines src/hyperloom/orchestrator/specialists/subprocess_.py 1337
 module-lines src/hyperloom/orchestrator/state/shared_state.py 2275

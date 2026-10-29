@@ -25,7 +25,6 @@ from hyperloom.orchestrator.policy.gate import (
     PolicyDenied,
     PolicyGate,
     REQUEST_ROUTING,
-    REVIEW_VERDICT_SOURCE_ALLOWLIST,
 )
 from hyperloom.orchestrator.state.shared_state import SharedState
 from hyperloom.inference_optimizer.session.paths import asset_system_prompts_dir
@@ -92,6 +91,11 @@ def test_kernel_owned_actions_include_gemm_tuning():
 def test_request_routing_v06_only_orchestration_to_kernel():
     assert set(REQUEST_ROUTING.keys()) == {"orchestration"}
     assert REQUEST_ROUTING["orchestration"] == frozenset({"kernel_agent"})
+
+
+REVIEW_VERDICT_SOURCE_ALLOWLIST = frozenset(
+    name for name, role in default_role_registry().items() if IntentType.REVIEW_VERDICT in role.allowed_intents
+)
 
 
 def test_review_verdict_critic_only():

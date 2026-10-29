@@ -26,19 +26,24 @@ def _isolate_session_memory(tmp_path, monkeypatch):
     yield
 
 
-def test_prepare_and_commit_review_for_coordinator_inbox(tmp_path, capsys):
-    request = _write(
+def _inbox_request(tmp_path: Path, session_id: str, msg_id: str) -> Path:
+    """A coordinator-inbox request carrying one baseline proposal."""
+    return _write(
         tmp_path / "req.json",
         {
-            "session_id": "sess_cli_e2e",
+            "session_id": session_id,
             "raw_prompt": (
                 "=== Shared session state ===\n"
                 "model=qwen3-14b framework=sglang workload=decode precision=fp8\n"
                 "=== Inbox for critic ===\n"
-                "  seq=1 msg_id=cli01 from=orchestration topic=proposal payload={'action_name': 'baseline'}\n"
+                f"  seq=1 msg_id={msg_id} from=orchestration topic=proposal payload={{'action_name': 'baseline'}}\n"
             ),
         },
     )
+
+
+def test_prepare_and_commit_review_for_coordinator_inbox(tmp_path, capsys):
+    request = _inbox_request(tmp_path, "sess_cli_e2e", "cli01")
     rc = main(["prepare-review", "--request", str(request), "--out", str(tmp_path / "judge.json")])
     assert rc == 0
     judge = json.loads((tmp_path / "judge.json").read_text("utf-8"))
@@ -70,6 +75,17 @@ def test_prepare_and_commit_review_for_coordinator_inbox(tmp_path, capsys):
     assert rc == 0
     emit = json.loads((tmp_path / "emit.json").read_text("utf-8"))
     assert emit["intent_envelope"]["intents"][0]["payload"]["verdict"] == "approve"
+
+
+@pytest.mark.parametrize(("kb_writes", "written"), [([], 0), (["--kb-write", "cli02"], 1)])
+def test_commit_review_keeps_a_lesson_only_for_a_verdict_it_is_told_to(tmp_path, kb_writes, written):
+    request = _inbox_request(tmp_path, "sess_cli_kb", "cli02")
+    verdict = {"target_proposal_msg_id": "cli02", "verdict": "reject", "reasoning": "r", "persist_to_kb": True}
+    review = _write(tmp_path / "review.json", {"review_verdicts": [verdict]})
+    out = tmp_path / "emit.json"
+    rc = main(["commit-review", "--request", str(request), "--review", str(review), *kb_writes, "--out", str(out)])
+    assert rc == 0
+    assert len(json.loads(out.read_text("utf-8"))["kb_writes"]) == written
 
 
 def test_invalid_request_returns_exit_code_2(tmp_path):

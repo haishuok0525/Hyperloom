@@ -121,6 +121,21 @@ async def test_the_model_is_asked_with_the_constrained_bundle_and_the_cached_pre
     assert turn.tool_calls[0].args["review"]["review_verdicts"][0]["verdict"] == "approve"
 
 
+async def test_the_kb_keeps_a_lesson_only_for_a_persisted_verdict_worth_keeping() -> None:
+    verdicts = [
+        {"target_proposal_msg_id": "p1", "verdict": "reject", "persist_to_kb": True},
+        {"target_proposal_msg_id": "p2", "verdict": "advise", "persist_to_kb": True},
+        {"target_proposal_msg_id": "p3", "verdict": "approve"},
+        {"target_proposal_msg_id": "p4", "verdict": "redirect", "persist_to_kb": True},
+        "not a verdict",
+    ]
+    reply = LlmReply(raw_text=f"```json\n{json.dumps({'review_verdicts': verdicts})}\n```")
+    turn = await _turn(_Port(_Model(reply), _bundle({"msg_id": "p1", "action_name": "baseline"})))
+    assert turn.tool_calls[0].args["kb_writes"] == ["p1", "p4"]
+    skipped = await _turn(_Port(_Model(), _bundle()))
+    assert skipped.tool_calls[0].args["kb_writes"] == []
+
+
 async def test_a_proposal_no_rule_governs_gets_no_rule_constraints() -> None:
     model = _Model(LlmReply(raw_text=_RULING))
     turn = await _turn(_Port(model, _bundle({"msg_id": "p1", "action_name": "baseline"})), phase="")

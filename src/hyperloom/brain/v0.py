@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from hyperloom.brain.critic import CRITIC_ROLE, review_turn
 from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
+from hyperloom.brain.roles import ROLE_INTENTS
 from hyperloom.brain.specialist import brief_turn
 from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
 
@@ -21,6 +22,7 @@ class BrainV0:
 
     name = "v0"
     contract_version = CONTRACT_VERSION
+    role_intents = ROLE_INTENTS
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = dict(config)

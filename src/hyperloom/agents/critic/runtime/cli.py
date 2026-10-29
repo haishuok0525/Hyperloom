@@ -56,7 +56,7 @@ def _cmd_commit_review(args: argparse.Namespace) -> None:
     if not isinstance(review, dict):
         raise RuntimeAdapterError("--review must be a JSON object")
     reviewer = _resolve_reviewer()
-    outcome = reviewer.commit_review(request, review)
+    outcome = reviewer.commit_review(request, review, kb_write_targets=frozenset(args.kb_write))
     emit_json(outcome.to_dict(), args.out)
 
 
@@ -91,6 +91,8 @@ def _make_parser() -> argparse.ArgumentParser:
     commit = sub.add_parser("commit-review")
     commit.add_argument("--request", type=Path, required=True)
     commit.add_argument("--review", type=Path, required=True)
+    # Repeated: one target_proposal_msg_id per verdict the KB keeps a lesson for.
+    commit.add_argument("--kb-write", action="append", default=[], metavar="MSG_ID")
     commit.add_argument("--out", default="-")
     commit.set_defaults(func=_cmd_commit_review)
 

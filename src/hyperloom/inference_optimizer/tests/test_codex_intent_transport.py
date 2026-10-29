@@ -17,14 +17,13 @@ from hyperloom.common import codex_session
 from hyperloom.common.codex_session import CodexSession, CodexSessionError, CodexSessionResult, CodexTurnRequest
 from hyperloom.inference_optimizer.protocol.intent import IntentType, NoIntentEmitted
 from hyperloom.orchestrator.roles import codex as codex_module
-from hyperloom.orchestrator.roles.agent_role import (
-    _CRITIC_INTENTS,
-    _ORCHESTRATION_INTENTS,
-    default_role_registry,
-)
+from hyperloom.orchestrator.roles.agent_role import default_role_registry
 from hyperloom.orchestrator.roles.base import LLMCallFailed
 from hyperloom.orchestrator.roles.codex import CodexBackend
 from hyperloom.orchestrator.roles.mcp_emit_intent import build_intent_envelope_schema
+
+_ORCHESTRATION_INTENTS = default_role_registry()["orchestration"].allowed_intents
+_CRITIC_INTENTS = default_role_registry()["critic"].allowed_intents
 
 
 def _intent_type_enum(schema: dict[str, Any]) -> list[str]:

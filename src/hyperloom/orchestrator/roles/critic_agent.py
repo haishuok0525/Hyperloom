@@ -97,6 +97,8 @@ class RuntimeCall:
     cwd: Path
     env: dict[str, str]
     review_path: Path | None = None
+    #: commit-review only: the proposals whose verdict the brain asked the KB to keep.
+    kb_write_targets: tuple[str, ...] = ()
 
 
 RuntimeCaller = Callable[[RuntimeCall], None]
@@ -123,6 +125,8 @@ def _default_runtime_caller(call: RuntimeCall) -> None:
         if call.review_path is None:
             raise BackendError("commit-review invocation missing --review path")
         cmd += ["--review", str(call.review_path)]
+        for target in call.kb_write_targets:
+            cmd += ["--kb-write", target]
 
     try:
         proc = subprocess.run(
@@ -241,6 +245,14 @@ def _ruling(turn: BrainTurn) -> dict[str, Any]:
             f"CriticAgentBackend: a critic turn records one ruling and nothing else; the brain asked for {names}"
         )
     return dict(turn.tool_calls[0].args) if turn.tool_calls else {}
+
+
+def _kb_write_targets(ruling: dict[str, Any]) -> tuple[str, ...]:
+    """The proposals a ruling asks the KB to keep a lesson for."""
+    targets = ruling.get("kb_writes") or []
+    if not isinstance(targets, list) or not all(isinstance(t, str) for t in targets):
+        raise BackendError(f"CriticAgentBackend: kb_writes must list proposal msg ids, got {targets!r}")
+    return tuple(targets)
 
 
 class _CriticReviewModel:
@@ -514,10 +526,7 @@ class CriticAgentBackend:
         llm_finish = ruling.get("finish")
         proposals = judge_bundle.get("proposals") or []
 
-        review_path.write_text(
-            json.dumps(review, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # commit-review.
         await asyncio.to_thread(
@@ -529,6 +538,7 @@ class CriticAgentBackend:
                 out_path=emit_path,
                 cwd=self.critic_agent_root,
                 env=env,
+                kb_write_targets=_kb_write_targets(ruling),
             ),
         )
         try:

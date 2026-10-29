@@ -64,6 +64,7 @@ from hyperloom.brain_api import BrainTurn
 class Brain:
     name = "silent"
     contract_version = "1.0"
+    role_intents = {}
 
     async def on_llm_turn(self, batch, port):
         return BrainTurn()
