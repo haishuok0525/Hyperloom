@@ -13,14 +13,15 @@ from pathlib import Path
 from collections.abc import Collection, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from hyperloom.brain_api import BrainTurn
+from hyperloom.brain_api import BrainTurn, CallSite
 from hyperloom.common.coerce import first_str, first_text, to_float, to_list, to_mapping
 from hyperloom.common.env_safety import redact_secret_values
 from hyperloom.inference_optimizer.session.optimization_journal import Verdict
 from hyperloom.inference_optimizer import framework_registry
 
 from . import machine_state as _phase_state
-from ..brain_link import DecisionPort, QueryAnswer, ask_settlement, one_decision
+from ..brain_link import DecisionPort, QueryAnswer, ask_brain, one_decision
+from .framework_pump import FRAMEWORK_PUMP_KEY, framework_pump_steps
 from .specialist_delivery import (
     CONFIG_DELIVERY_KEY,
     PATCH_DELIVERY_KEY,
@@ -2142,7 +2143,8 @@ class FrameworkPhase(ProposalBench):
         """Ask the brain the settlement follow-up ``request`` names under snapshot key ``key``."""
         state = self.shared_state
         port = DecisionPort(f"a {key} settlement", queries)
-        return await ask_settlement(key, request, port=port, tick=int(state.tick or 0), phase=state.phase or "")
+        tick, phase = int(state.tick or 0), state.phase or ""
+        return await ask_brain(CallSite.SETTLEMENT, {key: request}, port=port, tick=tick, phase=phase)
 
     async def maybe_reauthor_from_critic_feedback(
         self,
@@ -2254,33 +2256,24 @@ class FrameworkPhase(ProposalBench):
         )
 
     async def pump(self) -> None:
-        """Best-effort FRAMEWORK pump wrapper run once per Coordinator tick.
+        """Best-effort FRAMEWORK pump wrapper run once per Coordinator tick; the brain runs the phase's steps.
 
         A pump that raises must not take the tick down -- the phase is driven
         again on the next one -- but it is filed like any other coordinator-side
         exception, because a pump that raises on every tick otherwise leaves a
         phase that never dispatched anything closing clean.
         """
-        stage = "framework_pump"
+        stage = ["framework_pump"]
+        state = self.shared_state
         try:
-            if self.shared_state.custom_specialist_only:
-                await self._coord.specialist_dispatch.ensure_custom_specialist()
-                await self._maybe_bench_untested_proposals()
-                await self._maybe_finish_custom_only_cycle()
-                return
-            await self._pump_framework_agent_phase()
-            await self._maybe_bench_untested_proposals()
-            await self._coord.phase_internal.maybe_enqueue_explore_research_scout()
-            await self._coord.phase_internal.maybe_enqueue_config_plateau_static_recon()
-            await self._coord.specialist_dispatch.maybe_force_stalled_domain_specialist()
-            await self._coord.specialist_dispatch.ensure_custom_specialist()
-            self._record_advisory_plateau()
-            # Last, as at entry, so a predictor fault is filed here after the phase's own work has run.
-            stage = "framework_predictor"
-            await self._predictor_pump().step(self.shared_state)
+            question = {FRAMEWORK_PUMP_KEY: {"custom_specialist_only": bool(state.custom_specialist_only)}}
+            port = DecisionPort("the FRAMEWORK pump", framework_pump_steps(self, stage))
+            tick, phase = int(state.tick or 0), state.phase or ""
+            turn = await ask_brain(CallSite.PHASE_PUMP, question, port=port, tick=tick, phase=phase)
+            one_decision(turn, (), what="the FRAMEWORK pump")
         except Exception as exc:  # isolation boundary: the FRAMEWORK pump within one tick
-            log.exception("FRAMEWORK pump failed at %s", stage)
-            self._coord.record_exception(stage=stage, exc=exc)
+            log.exception("FRAMEWORK pump failed at %s", stage[0])
+            self._coord.record_exception(stage=stage[0], exc=exc)
 
     def _record_framework_agent_authored_outcome(
         self,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from hyperloom.brain_api import BrainContractError, BrainTurn, VerdictOutcome
+from hyperloom.brain_api import BrainContractError, BrainTurn, CallSite, VerdictOutcome
 
 from .. import brain_link
 from ..specialists.patch_safety import advisory_only_reason_codes, advisory_rules_govern
@@ -61,7 +61,9 @@ async def settle_verdict(request: Mapping[str, Any], *, tick: int, phase: str) -
         BrainContractError: if the brain answers with anything but one well-formed ``verdict.settle``.
     """
     port = brain_link.DecisionPort("a verdict settlement")
-    turn = await brain_link.ask_settlement(_SETTLEMENT_KEY, request, port=port, tick=tick, phase=phase)
+    turn = await brain_link.ask_brain(
+        CallSite.SETTLEMENT, {_SETTLEMENT_KEY: request}, port=port, tick=tick, phase=phase
+    )
     try:
         return _settlement(turn)
     except (KeyError, TypeError, ValueError) as exc:

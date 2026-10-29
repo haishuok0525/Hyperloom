@@ -40,7 +40,7 @@ class CallSite(str, Enum):
     LLM_TURN = "llm_turn"
     #: A settlement's follow-ups: a Critic verdict on a proposal, a specialist's deliverable, a re-author.
     SETTLEMENT = "settlement"
-    #: The phase pump: the current phase's deterministic strategy.
+    #: The phase pump: the current phase's deterministic strategy and the internal specialists it dispatches.
     PHASE_PUMP = "phase_pump"
     #: Outside the tick order: a specialist job is about to run and needs its brief.
     BRIEF = "brief"

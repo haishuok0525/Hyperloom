@@ -55,7 +55,8 @@ class ToolSpec:
     name: str
     kind: ToolKind
     callers: frozenset[Caller]
-    #: Kept only until the body splits it into ``candidate.apply`` + ``candidate.benchmark``.
+    #: Kept only until the body splits it into ``candidate.apply`` + ``candidate.benchmark`` (an ``action.*``), or
+    #: until the brain makes the decisions the body step still makes (a ``pump.*``).
     transitional: bool = False
 
 
@@ -96,6 +97,20 @@ QUERY_NAMES: tuple[str, ...] = (
     "read_reference",
     "get_failure",
     "get_variant_failures",
+)
+
+
+#: FRAMEWORK pump steps the brain runs as ``pump.<name>``, in the order it chooses, each still deciding its own work.
+_PUMP_STEPS = (
+    "framework_agent",
+    "bench_untested",
+    "research_scout",
+    "config_plateau_recon",
+    "stalled_domain",
+    "custom_specialist",
+    "advisory_plateau",
+    "predictor",
+    "finish_custom_cycle",
 )
 
 
@@ -142,6 +157,18 @@ def _catalogue() -> dict[str, ToolSpec]:
         ToolSpec("reauthor.decline", ToolKind.CONTROL, _STRATEGY_ONLY),
         # A candidate spent its re-author budget and is closed, ``{"attempts", "rationale"}``.
         ToolSpec("reauthor.exhausted", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # Coordinator-owned read-only specialists the phase strategy dispatches: the research scout,
+        # ``{"reason", "round_id"}``; static recon, ``{"reason", "slug"}``; the plateau trajectory review, ``{"domain"}``.
+        ToolSpec("specialist.research_scout", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("specialist.static_recon", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("specialist.trajectory_review", ToolKind.JOB, _STRATEGY_ONLY),
+        # Whether the config arm has gone dry, ``{}`` -> ``{"plateaued"}``.
+        ToolSpec("query.config_arm_plateau", ToolKind.QUERY, _STRATEGY_ONLY),
+        # Whether the search has plateaued, ``{}`` -> ``{"active"}``.
+        ToolSpec("query.plateau_advisory", ToolKind.QUERY, _STRATEGY_ONLY),
+        # The specialist domain the dominant roofline bottleneck points at, ``{}`` -> ``{"hinted_domain"}`` (empty
+        # when none does).
+        ToolSpec("query.trajectory_direction", ToolKind.QUERY, _STRATEGY_ONLY),
         ToolSpec("phase.request_exit", ToolKind.CONTROL, _BOTH),
         # One intent a model turn emitted, ``{"intent_type", "payload"}``, handed to the body's intent router whole.
         ToolSpec("intent.route", ToolKind.CONTROL, _LLM_ONLY),
@@ -152,6 +179,7 @@ def _catalogue() -> dict[str, ToolSpec]:
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH if a in _LLM_ACTIONS else _STRATEGY_ONLY) for a in _ACTIONS]
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH, transitional=True) for a in _TRANSITIONAL_ACTIONS]
     specs += [ToolSpec(f"query.{q}", ToolKind.QUERY, _BOTH) for q in QUERY_NAMES]
+    specs += [ToolSpec(f"pump.{p}", ToolKind.JOB, _STRATEGY_ONLY, transitional=True) for p in _PUMP_STEPS]
     return {s.name: s for s in specs}
 
 
