@@ -12,6 +12,16 @@ from typing import Any, Mapping
 
 from hyperloom.brain.critic import CRITIC_ROLE, PATCH_APPROVAL_VERDICTS, SETTLEMENT_KEY, review_turn, settle_verdict
 from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
+from hyperloom.brain.pump import (
+    FRAMEWORK_PUMP_KEY,
+    RESEARCH_SCOUT_KEY,
+    STATIC_RECON_KEY,
+    TRAJECTORY_REVIEW_KEY,
+    framework_pump,
+    research_scout,
+    static_recon,
+    trajectory_review,
+)
 from hyperloom.brain.roles import ROLE_INTENTS
 from hyperloom.brain.settle import (
     CONFIG_DELIVERY_KEY,
@@ -58,7 +68,16 @@ class BrainV0:
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """No phase strategy has moved yet."""
+        """The FRAMEWORK pump's steps, or whether an internal specialist is dispatched."""
+        data = batch.snapshot.data
+        if FRAMEWORK_PUMP_KEY in data:
+            return await framework_pump(batch, port)
+        if RESEARCH_SCOUT_KEY in data:
+            return research_scout(batch)
+        if STATIC_RECON_KEY in data:
+            return await static_recon(batch, port)
+        if TRAJECTORY_REVIEW_KEY in data:
+            return await trajectory_review(batch, port)
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_brief(self, batch: TickBatch, port: Port) -> BrainTurn:

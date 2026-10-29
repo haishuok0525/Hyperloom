@@ -54,8 +54,10 @@ def test_the_llm_may_call_exactly_the_actions_it_may_propose_today(action) -> No
     assert (Caller.LLM in TOOLS[tool_for_action(action)].callers) == (action in _LLM_PROPOSABLE)
 
 
-def test_only_the_combined_measurement_actions_are_transitional() -> None:
-    assert {n for n, s in TOOLS.items() if s.transitional} == {"action.explore", "action.integrate_patch"}
+def test_only_the_combined_measurement_actions_and_the_pump_steps_are_transitional() -> None:
+    transitional = {n for n, s in TOOLS.items() if s.transitional}
+    assert {n for n in transitional if not n.startswith("pump.")} == {"action.explore", "action.integrate_patch"}
+    assert all(TOOLS[n].callers == {Caller.STRATEGY} for n in transitional if n.startswith("pump."))
 
 
 def test_an_unknown_action_has_no_tool() -> None:

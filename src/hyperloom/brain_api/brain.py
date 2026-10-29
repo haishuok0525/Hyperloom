@@ -14,7 +14,7 @@ from hyperloom.brain_api.tools import INTENT_TOOLS, ToolCall
 from hyperloom.brain_api.wire import json_value
 
 #: ``major.minor``. A brain built for another major is refused; a newer minor only adds.
-CONTRACT_VERSION = "1.3"
+CONTRACT_VERSION = "1.4"
 
 
 class BrainContractError(RuntimeError):
@@ -106,7 +106,9 @@ class Brain(Protocol):
         ...
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """The current phase's strategy."""
+        """The current phase's strategy, named by its ``snapshot.data`` key: the FRAMEWORK pump's steps
+        (``"framework_pump"``), or whether a Coordinator-owned specialist is dispatched (``"research_scout"``,
+        ``"static_recon"``, ``"trajectory_review"``)."""
         ...
 
     async def on_brief(self, batch: TickBatch, port: Port) -> BrainTurn:

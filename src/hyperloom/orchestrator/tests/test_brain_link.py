@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from hyperloom.brain_api import BrainContractError, BrainTurn, ToolCall, TurnFailed
-from hyperloom.orchestrator.brain_link import DecisionPort, one_decision
+from hyperloom.orchestrator.brain_link import DecisionPort, one_decision, step_answer
 
 
 async def test_a_decision_port_answers_its_queries_and_refuses_every_other_call() -> None:
@@ -30,3 +30,14 @@ def test_a_turn_is_held_to_at_most_one_allowed_decision() -> None:
         one_decision(BrainTurn(tool_calls=(submit, submit)), ("review.submit",), what="a patch")
     with pytest.raises(BrainContractError, match="decided a patch"):
         one_decision(BrainTurn(tool_calls=(ToolCall("review.skip", {}),)), ("review.submit",), what="a patch")
+
+
+async def test_a_step_answer_runs_its_body_step_and_reports_nothing() -> None:
+    ran: list[str] = []
+
+    async def _step() -> None:
+        ran.append("ran")
+
+    port = DecisionPort("a pump", {"pump.predictor": step_answer(_step)})
+    assert await port.call(ToolCall("pump.predictor", {})) == {}
+    assert ran == ["ran"]

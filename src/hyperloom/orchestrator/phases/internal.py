@@ -7,15 +7,44 @@ from __future__ import annotations
 import logging as _logging
 import os
 import re
-from typing import Any
+from typing import Any, Mapping
 
+from hyperloom.brain_api import BrainTurn, CallSite
 from hyperloom.common.env import env_bool
 
+from ..brain_link import DecisionPort, QueryAnswer, ask_brain, one_decision
 from ..state.task_registry import Task, TaskSpec
 from ..collaborator import CoordinatorCollaborator
 from . import machine_state as _phase_state
 
 log = _logging.getLogger(__name__)
+
+
+# Snapshot keys the brain decides the internal specialists under.
+_RESEARCH_SCOUT_KEY = "research_scout"
+_STATIC_RECON_KEY = "static_recon"
+_TRAJECTORY_REVIEW_KEY = "trajectory_review"
+
+
+async def _ask(
+    state: Any, key: str, request: Mapping[str, Any], queries: Mapping[str, QueryAnswer] | None = None
+) -> BrainTurn:
+    """Ask the phase strategy whether the internal specialist ``key`` names is dispatched."""
+    port = DecisionPort(f"a {key} decision", queries)
+    tick, phase = int(state.tick or 0), state.phase or ""
+    return await ask_brain(CallSite.PHASE_PUMP, {key: request}, port=port, tick=tick, phase=phase)
+
+
+async def _dispatch_static_recon(
+    phase: Any, request: Mapping[str, Any], queries: Mapping[str, QueryAnswer] | None = None
+) -> None:
+    """Enqueue the static recon the brain dispatches on ``request``, if it does."""
+    turn = await _ask(phase.shared_state, _STATIC_RECON_KEY, request, queries)
+    decision = one_decision(turn, ("specialist.static_recon",), what="a static recon")
+    if decision is not None:
+        await phase._enqueue_internal_static_recon_task(
+            reason=str(decision.args["reason"]), slug=str(decision.args["slug"])
+        )
 
 
 def _bridge_symptom(cand: dict[str, Any], predicate_file: str, why: str) -> str:
@@ -153,35 +182,37 @@ class InternalTasksPhase(CoordinatorCollaborator):
         return task
 
     async def maybe_enqueue_prelude_research_scout(self) -> None:
-        """Force-dispatch the PRELUDE research scout (not LLM-proposable); writes hints skeleton first."""
+        """Force-dispatch the PRELUDE research scout (not LLM-proposable) when the brain says; writes hints skeleton first."""
         try:
             from hyperloom.inference_optimizer.baseline_comparison import research_hints as _research_hints
 
             _research_hints.write_hints_skeleton(self.session_dir)
         except OSError:
             log.exception("research-scout: hints skeleton write failed")
-        if not bool(self.shared_state.research_scout_enabled):
-            return
-        await self._enqueue_internal_research_scout_task(
-            reason="prelude_initial",
-            round_id=0,
+        await self._dispatch_research_scout(
+            {"prelude": True, "enabled": bool(self.shared_state.research_scout_enabled)}
         )
 
     async def maybe_enqueue_explore_research_scout(self) -> None:
-        """Re-dispatch the scout every K config-arm rounds (append-only)."""
+        """Re-dispatch the scout every K config-arm rounds (append-only), as the brain decides."""
         state = self.shared_state
-        if not bool(state.research_scout_enabled):
-            return
-        interval = max(1, int(state.research_scout_interval or 3))
-        round_id = int((state.explore_search or {}).get("cursor") or 0)
-        if round_id <= 0 or (round_id % interval) != 0:
-            return
-        if int(state.research_scout_last_round) == round_id:
-            return
-        await self._enqueue_internal_research_scout_task(
-            reason="explore_periodic",
-            round_id=round_id,
+        await self._dispatch_research_scout(
+            {
+                "prelude": False,
+                "enabled": bool(state.research_scout_enabled),
+                "interval": state.research_scout_interval,
+                "cursor": (state.explore_search or {}).get("cursor"),
+                "last_round": state.research_scout_last_round,
+            }
         )
+
+    async def _dispatch_research_scout(self, request: dict[str, Any]) -> None:
+        """Enqueue the research scout the brain dispatches on ``request``, if it does."""
+        turn = await _ask(self.shared_state, _RESEARCH_SCOUT_KEY, request)
+        decision = one_decision(turn, ("specialist.research_scout",), what="a research scout")
+        if decision is not None:
+            args = decision.args
+            await self._enqueue_internal_research_scout_task(reason=str(args["reason"]), round_id=int(args["round_id"]))
 
     async def _enqueue_internal_static_recon_task(
         self,
@@ -240,49 +271,54 @@ class InternalTasksPhase(CoordinatorCollaborator):
         return task
 
     async def maybe_enqueue_prelude_static_recon(self) -> None:
-        """Force-dispatch the PRELUDE static-recon specialist (not LLM-proposable)."""
-        if not bool(self.shared_state.static_recon_enabled):
-            return
-        await self._enqueue_internal_static_recon_task(
-            reason="prelude_initial",
-            slug="prelude",
-        )
+        """Force-dispatch the PRELUDE static-recon specialist (not LLM-proposable) when the brain says."""
+        await _dispatch_static_recon(self, {"prelude": True, "enabled": bool(self.shared_state.static_recon_enabled)})
 
     async def maybe_enqueue_config_plateau_static_recon(self) -> None:
-        """Re-run static recon once per macro-cycle when the config arm goes dry.
-
-        The PRELUDE pass greps the source before any measurement exists. Once
-        the grids stop paying, the profile says which subsystem to look at, so a
-        second pass reads the predicates that matter rather than all of them.
-        """
+        """Re-run static recon once per macro-cycle when the brain sees the config arm go dry."""
         state = self.shared_state
-        if not bool(state.static_recon_enabled):
-            return
-        if str(state.phase or "").strip().upper() != _phase_state.PHASE_FRAMEWORK_AGENT:
-            return
-        _, evidence = _phase_state.per_lever_dryness(state)
-        if not bool(evidence.get("config_arm_plateaued")):
-            return
-        await self._enqueue_internal_static_recon_task(
-            reason="config_arm_plateau",
-            slug=f"cycle{int(state.macro_cycle or 0)}",
-        )
+
+        async def _plateau(_args: Mapping[str, Any]) -> dict[str, Any]:
+            _, evidence = _phase_state.per_lever_dryness(state)
+            return {"plateaued": bool(evidence.get("config_arm_plateaued"))}
+
+        request = {
+            "prelude": False,
+            "enabled": bool(state.static_recon_enabled),
+            "phase": state.phase,
+            "macro_cycle": state.macro_cycle,
+        }
+        await _dispatch_static_recon(self, request, {"query.config_arm_plateau": _plateau})
 
     async def maybe_enqueue_trajectory_reviewer(self) -> None:
-        """On a plateau, dispatch a Coordinator-owned readonly specialist seeded with the deterministic trajectory digest to propose fresh directions."""
-        if not env_bool("INFERENCE_OPTIMIZER_TRAJECTORY_LLM_REVIEW", default=True):
-            return
-        state = self.shared_state
-        plateau_active = bool(self._coord.conversation.plateau_advisory_block())
-        if not plateau_active:
-            return
-        cycle = int(state.macro_cycle or 0)
-        digest = self._coord.conversation.trajectory_digest()
-        direction, _pct = self._coord.conversation.dominant_roofline_direction()
-        from hyperloom.inference_optimizer.roofline_snapshot import BOTTLENECK_DOMAIN_HINTS
+        """On a plateau the brain sees, dispatch a Coordinator-owned readonly specialist seeded with the deterministic trajectory digest to propose fresh directions."""
+        digests: list[str] = []
 
-        hint = BOTTLENECK_DOMAIN_HINTS.get(direction)
-        domain = hint[0] if hint else "serving_specialist"
+        async def _plateau(_args: Mapping[str, Any]) -> dict[str, Any]:
+            return {"active": bool(self._coord.conversation.plateau_advisory_block())}
+
+        async def _direction(_args: Mapping[str, Any]) -> dict[str, Any]:
+            from hyperloom.inference_optimizer.roofline_snapshot import BOTTLENECK_DOMAIN_HINTS
+
+            digests.append(self._coord.conversation.trajectory_digest())
+            direction, _pct = self._coord.conversation.dominant_roofline_direction()
+            hint = BOTTLENECK_DOMAIN_HINTS.get(direction)
+            return {"hinted_domain": hint[0] if hint else ""}
+
+        queries = {"query.plateau_advisory": _plateau, "query.trajectory_direction": _direction}
+        request = {"enabled": env_bool("INFERENCE_OPTIMIZER_TRAJECTORY_LLM_REVIEW", default=True)}
+        turn = await _ask(self.shared_state, _TRAJECTORY_REVIEW_KEY, request, queries)
+        decision = one_decision(turn, ("specialist.trajectory_review",), what="a trajectory review")
+        if decision is None:
+            return
+        if not digests:
+            digests.append(self._coord.conversation.trajectory_digest())
+        await self._enqueue_trajectory_review(str(decision.args["domain"]), digests[0])
+
+    async def _enqueue_trajectory_review(self, domain: str, digest: str) -> None:
+        """Enqueue the trajectory review the brain dispatched to ``domain``."""
+        state = self.shared_state
+        cycle = int(state.macro_cycle or 0)
         params: dict[str, Any] = {
             "domain": domain,
             "source_phase": str(state.phase or "INTERNAL").strip().upper(),

@@ -10,6 +10,7 @@ import time
 from typing import Any, Awaitable, Callable, Collection, Mapping
 
 from hyperloom.brain_api import (
+    CALL_SITE_METHODS,
     Brain,
     BrainContractError,
     BrainTurn,
@@ -59,18 +60,29 @@ class DecisionPort:
         return await answer(call.args)
 
 
-async def ask_settlement(
-    key: str, request: Mapping[str, Any], *, port: DecisionPort, tick: int, phase: str
+async def ask_brain(
+    call_site: CallSite, question: Mapping[str, Mapping[str, Any]], *, port: DecisionPort, tick: int, phase: str
 ) -> BrainTurn:
-    """Ask the brain the settlement follow-up ``request`` names under snapshot key ``key``."""
+    """Ask the brain, at ``call_site``, the question ``question`` puts under its one snapshot key."""
     batch = TickBatch(
-        call_site=CallSite.SETTLEMENT,
+        call_site=call_site,
         tick=tick,
         now_unix=time.time(),
         events=(),
-        snapshot=StateSnapshot(phase=phase, data={key: dict(request)}),
+        snapshot=StateSnapshot(phase=phase, data={key: dict(request) for key, request in question.items()}),
     )
-    return await resolve_brain().on_settlement(batch, port)
+    method = getattr(resolve_brain(), CALL_SITE_METHODS[call_site])
+    return await method(batch, port)
+
+
+def step_answer(run: Callable[[], Awaitable[Any]]) -> QueryAnswer:
+    """The answer to a call that runs one body step and reports nothing back."""
+
+    async def _answer(_args: Mapping[str, Any]) -> dict[str, Any]:
+        await run()
+        return {}
+
+    return _answer
 
 
 def one_decision(turn: BrainTurn, allowed: Collection[str], *, what: str) -> ToolCall | None:
