@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from hyperloom.brain.critic import CRITIC_ROLE, review_turn
+from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
 from hyperloom.brain.specialist import brief_turn
 from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
 
@@ -25,9 +26,11 @@ class BrainV0:
         self.config = dict(config)
 
     async def on_llm_turn(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """The Critic turn; the orchestration turn has not moved yet."""
+        """The Critic turn or the orchestration turn, whichever role's model the body lent."""
         if CRITIC_ROLE in port.llm:
             return await review_turn(batch, port)
+        if ORCHESTRATION_ROLE in port.llm:
+            return await orchestration_turn(batch, port)
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_settlement(self, batch: TickBatch, port: Port) -> BrainTurn:

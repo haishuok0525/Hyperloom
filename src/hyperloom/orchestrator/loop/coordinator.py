@@ -60,20 +60,19 @@ from ..bus.gpu_pool import (
 from ..bus.resource_lock import SqliteLeaseBackend
 from ..state.shared_state import SharedState, effective_closing_grace_sec
 from .signals import SignalDrain
+from .brain_reactor import ReactorModels, ReactorTurn
 from .intent_router import IntentRouter
 from hyperloom.inference_optimizer.model_config_utils import infer_model_class
 from .sub_agent_runner import SubAgentRunner
 from ..state.task_registry import TaskRegistry, task_dispatch_origin
 from ..collaborator import OrchestrationPrompt
 from hyperloom.inference_optimizer.trace.llm_trace import LLMCallRecord, LLMCallSite, append_llm_call, new_call_id
-from hyperloom.inference_optimizer.trace.context_events import PromptSnapshotTracker, record_prompt_snapshot
+from hyperloom.inference_optimizer.trace.context_events import PromptSnapshotTracker
 from hyperloom.inference_optimizer.trace.trajectory_trace import (
-    EVENT_LLM_CALL,
     EVENT_PROPOSAL,
     EVENT_SESSION,
     STATUS_CANCELLED,
     TERMINAL_STATUSES,
-    llm_call_summary,
     load_events,
     record_event,
     trajectory_scope,
@@ -316,7 +315,7 @@ class Coordinator:
             _cycle_hours = env_float("INFERENCE_OPTIMIZER_CYCLE_HOURS", default=DEFAULT_CYCLE_HOURS)
             self.shared_state.cycle_minutes = max(1.0, _cycle_hours * 60.0)
 
-        self._prompt_snapshots = PromptSnapshotTracker()
+        self._reactor_models = ReactorModels(PromptSnapshotTracker())
 
         # Per-agent BackendError streak; crossing threshold records one backend_unhealthy, then re-arms.
         self._backend_error_streak: dict[str, int] = dict.fromkeys(self.role_registry, 0)
@@ -1077,7 +1076,6 @@ class Coordinator:
         """Body of :meth:`reactor_pass`."""
         backend = self.backends[agent_name]
         turn = await self.conversation.compose_turn(agent_name, backend)
-        prompt = f"{turn.prompt}\n\n{request}" if request else turn.prompt
         tools = self.policy.allowed_tools_for_agent(agent_name)
         # Stamp timeline keys onto backends that self-write their trace row.
         _set_trace_ctx = getattr(backend, "set_trace_context", None)
@@ -1088,27 +1086,14 @@ class Coordinator:
                 phase=(self.shared_state.phase or "") or None,
                 macro_cycle=int(self.shared_state.macro_cycle or 0),
             )
-        # max_turns=0 → backend default.
         _t0 = time.perf_counter()
         call_id = new_call_id()
         try:
-            with trajectory_span(
-                EVENT_LLM_CALL,
-                call_id=call_id,
-                attributes={"name": agent_name, "model": getattr(backend, "model", None)},
-            ) as call_span:
-                record_prompt_snapshot(
-                    self._prompt_snapshots.observe(
-                        agent_name, prompt=prompt, system_prompt=turn.system_prompt, tools=tools
-                    )
-                )
-                result: BackendTurnResult = await backend.run(
-                    prompt=prompt,
-                    system_prompt=turn.system_prompt,
-                    tools=tools,
-                    max_turns=0,
-                )
-                call_span.finish(**llm_call_summary(result.metadata))
+            called = await self._reactor_models.run(
+                ReactorTurn(agent_name, backend, turn.prompt, turn.system_prompt, request, tools, call_id),
+                tick=int(self.shared_state.tick or 0),
+                phase=self.shared_state.phase or "",
+            )
         except BackendError as exc:
             if isinstance(exc, LLMCallFailed) and not backend_self_traces:
                 self._trace_reactor_llm_failure(
@@ -1150,12 +1135,13 @@ class Coordinator:
             self._backend_error_alarm_armed[agent_name] = True
             self._backend_error_since.pop(agent_name, None)
             self._backend_retry_at.pop(agent_name, None)
+        result = called.result
         # Record this reactor turn's token spend on the unified ledger.
         latency_ms = int((time.perf_counter() - _t0) * 1000)
         self._trace_reactor_llm_call(agent_name, result, latency_ms=latency_ms)
         # Full-trace: persist the redacted prompt+response for this turn.
         self.conversation.record_reactor_conversation(agent_name, result, context=turn.context)
-        with trajectory_scope(call_id=call_id, parent_span_id=call_span.span_id):
+        with trajectory_scope(call_id=call_id, parent_span_id=called.span_id):
             for intent in result.intents:
                 await self.router.handle_intent(agent_name, intent)
         if result.intents:
