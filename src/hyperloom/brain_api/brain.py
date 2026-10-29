@@ -10,11 +10,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from hyperloom.brain_api.events import BrainTurn, CallSite, TickBatch
-from hyperloom.brain_api.tools import ToolCall
+from hyperloom.brain_api.tools import INTENT_TOOLS, ToolCall
 from hyperloom.brain_api.wire import json_value
 
 #: ``major.minor``. A brain built for another major is refused; a newer minor only adds.
-CONTRACT_VERSION = "1.0"
+CONTRACT_VERSION = "1.1"
 
 
 class BrainContractError(RuntimeError):
@@ -90,6 +90,8 @@ class Brain(Protocol):
 
     name: str
     contract_version: str
+    #: Model role -> the intent types its model may emit, in the order it is offered them.
+    role_intents: Mapping[str, Sequence[str]]
 
     async def on_llm_turn(self, batch: TickBatch, port: Port) -> BrainTurn:
         """The model turns; ``port.llm`` holds one handle per role that runs now."""
@@ -124,11 +126,24 @@ def _major(version: object) -> str | None:
     return major if dot and major.isdigit() and minor.isdigit() else None
 
 
+def _role_intents_fault(role_intents: object) -> str | None:
+    if not isinstance(role_intents, Mapping):
+        return "has no role_intents mapping"
+    for role, intents in role_intents.items():
+        if not isinstance(role, str) or isinstance(intents, str) or not isinstance(intents, Sequence):
+            return f"role_intents[{role!r}] is not a sequence of intent types"
+        unknown = [i for i in intents if i not in INTENT_TOOLS]
+        if unknown:
+            return f"role_intents[{role!r}] names unknown intent types {unknown!r}"
+    return None
+
+
 def validate_brain(brain: object) -> Brain:
     """Return ``brain`` if it honours this contract.
 
     Raises:
-        BrainContractError: if it names no brain, was built for another contract major, or lacks a call site.
+        BrainContractError: if it names no brain, was built for another contract major, lacks a call site, or does not
+            say which intents each model role may emit.
     """
     name = getattr(brain, "name", None)
     if not (isinstance(name, str) and name):
@@ -141,4 +156,7 @@ def validate_brain(brain: object) -> Brain:
     missing = [m for m in CALL_SITE_METHODS.values() if not inspect.iscoroutinefunction(getattr(brain, m, None))]
     if missing:
         raise BrainContractError(f"brain {name!r} has no async {', '.join(missing)}")
+    fault = _role_intents_fault(getattr(brain, "role_intents", None))
+    if fault:
+        raise BrainContractError(f"brain {name!r} {fault}")
     return brain  # type: ignore[return-value]

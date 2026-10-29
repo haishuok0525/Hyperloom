@@ -10,35 +10,7 @@ from pathlib import Path
 
 from hyperloom.inference_optimizer.session.paths import asset_system_prompts_dir
 from hyperloom.inference_optimizer.protocol.intent import IntentType
-
-
-_BASE_INTENTS: frozenset[IntentType] = frozenset(
-    {
-        IntentType.SEND_MESSAGE,
-        IntentType.ALERT,
-    }
-)
-
-
-# Orchestration — only role with REQUEST authority.
-_ORCHESTRATION_INTENTS: frozenset[IntentType] = _BASE_INTENTS | frozenset(
-    {
-        IntentType.PROPOSE_ACTION,
-        IntentType.DELEGATE,
-        IntentType.REQUEST,
-        IntentType.EXTEND_LEASE,
-        IntentType.PRUNE_BRANCH,
-        IntentType.ESCALATE_STRATEGY_CHANGE,
-    }
-)
-
-
-# Critic — review verdicts only.
-_CRITIC_INTENTS: frozenset[IntentType] = _BASE_INTENTS | frozenset(
-    {
-        IntentType.REVIEW_VERDICT,
-    }
-)
+from hyperloom.orchestrator.brain_link import resolve_brain
 
 
 @dataclass(frozen=True)
@@ -46,6 +18,7 @@ class AgentRole:
     """Static role record. Backend instances are created elsewhere."""
 
     name: str
+    #: What the role may emit; the brain decides it, and PolicyGate refuses the rest.
     allowed_intents: frozenset[IntentType]
     can_delegate_side_effects: bool = False
     no_tools: bool = False
@@ -60,17 +33,22 @@ class AgentRole:
         return self.system_prompt_path.read_text(encoding="utf-8")
 
 
+def _brain_intents(role: str) -> frozenset[IntentType]:
+    """The intents the brain lets ``role``'s model emit."""
+    return frozenset(IntentType(intent) for intent in resolve_brain().role_intents.get(role, ()))
+
+
 def default_role_registry() -> dict[str, AgentRole]:
     """Return the canonical orchestration and critic role registry."""
     return {
         "orchestration": AgentRole(
             name="orchestration",
-            allowed_intents=_ORCHESTRATION_INTENTS,
+            allowed_intents=_brain_intents("orchestration"),
             can_delegate_side_effects=True,
         ),
         "critic": AgentRole(
             name="critic",
-            allowed_intents=_CRITIC_INTENTS,
+            allowed_intents=_brain_intents("critic"),
             can_delegate_side_effects=False,
             no_tools=True,
         ),

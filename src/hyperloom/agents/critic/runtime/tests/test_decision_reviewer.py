@@ -16,6 +16,7 @@ from hyperloom.agents.critic.runtime.kb_client import KBListQuery
 from hyperloom.agents.critic.runtime.kb_writer import KBWriter
 from hyperloom.agents.critic.runtime.request_models import Proposal
 from hyperloom.agents.critic.runtime.session_memory import SessionMemory
+from hyperloom.brain.critic import kb_write_targets
 
 
 def test_topic_for_proposal_prefers_action_then_payload_then_fallback(reviewer):
@@ -584,6 +585,7 @@ def test_commit_review_persists_to_kb_when_flagged(reviewer):
     outcome = rev.commit_review(
         _coordinator_request(_PROMPT_WITH_TWO_PROPOSALS, "sess_f"),
         review,
+        kb_write_targets=frozenset(kb_write_targets(review)),
     )
     assert any(w["trigger"] == "review_verdict" for w in outcome.kb_writes)
     assert kb.list(KBListQuery(scope_filter={}))["entries"]

@@ -27,7 +27,7 @@ from hyperloom.orchestrator.prompts.prompt_builder import (
     PromptCycle,
     SessionContext,
 )
-from hyperloom.orchestrator.roles.agent_role import _ORCHESTRATION_INTENTS, default_role_registry
+from hyperloom.orchestrator.roles.agent_role import default_role_registry
 from hyperloom.orchestrator.roles.base import BackendError, LLMCallFailed, RetryPolicy
 from hyperloom.orchestrator.roles.codex import CodexBackend
 from hyperloom.orchestrator.mcp_tool_names import (
@@ -39,6 +39,8 @@ from hyperloom.orchestrator.mcp_tool_names import (
 )
 from hyperloom.orchestrator.roles.mcp_context_tools import CONTEXT_TOOL_SPECS
 from hyperloom.inference_optimizer.session.paths import asset_prompt_references_dir, asset_system_prompts_dir
+
+_ORCHESTRATION_INTENTS = default_role_registry()["orchestration"].allowed_intents
 
 
 # The tool surface the system prompt actually documents, under the names the

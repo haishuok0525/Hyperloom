@@ -27,6 +27,7 @@ from hyperloom.brain_api import BrainTurn
 class Brain:
     name = "fake"
     contract_version = {version!r}
+    role_intents = {{"orchestration": ("send_message", "delegate")}}
 
     def __init__(self, config):
         self.config = config
@@ -86,6 +87,22 @@ def test_a_brain_for_another_contract_is_refused(brain_module, version) -> None:
 def test_a_brain_missing_an_async_call_site_is_refused(brain_module) -> None:
     source = _GOOD.format(version=CONTRACT_VERSION).replace("async def on_settlement", "def on_settlement")
     with pytest.raises(BrainContractError, match="on_settlement"):
+        load_brain(brain_module(source))
+
+
+@pytest.mark.parametrize(
+    ("role_intents", "fault"),
+    [
+        ("None", "no role_intents"),
+        ('{"orchestration": "send_message"}', "not a sequence"),
+        ('{"orchestration": ("send_message", "review")}', "unknown intent types"),
+    ],
+)
+def test_a_brain_that_does_not_say_what_each_role_may_emit_is_refused(brain_module, role_intents, fault) -> None:
+    source = _GOOD.format(version=CONTRACT_VERSION).replace(
+        'role_intents = {"orchestration": ("send_message", "delegate")}', f"role_intents = {role_intents}"
+    )
+    with pytest.raises(BrainContractError, match=fault):
         load_brain(brain_module(source))
 
 

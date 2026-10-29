@@ -30,6 +30,14 @@ def test_v0_honours_the_contract() -> None:
     assert validate_brain(create_brain({})).name == "v0"
 
 
+def test_only_orchestration_drives_and_only_the_critic_judges() -> None:
+    roles = create_brain({}).role_intents
+    assert set(roles) == {"orchestration", "critic"}
+    assert set(roles["critic"]) == {"send_message", "alert", "review_verdict"}
+    assert "review_verdict" not in roles["orchestration"]
+    assert {"request", "delegate", "propose_action"} <= set(roles["orchestration"])
+
+
 @pytest.mark.parametrize("site", [CallSite.LLM_TURN, CallSite.SETTLEMENT, CallSite.PHASE_PUMP])
 async def test_without_a_critic_model_every_call_site_returns_no_calls_and_hands_the_state_back(site) -> None:
     brain = create_brain({})

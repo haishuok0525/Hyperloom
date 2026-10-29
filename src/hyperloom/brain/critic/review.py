@@ -95,6 +95,25 @@ def is_truncated_finish(finish: str | None) -> bool:
     return isinstance(finish, str) and finish.strip().lower() in _TRUNCATED_FINISH_REASONS
 
 
+# The verdicts a lesson is worth keeping for, when the Critic asked for one.
+_KB_LESSON_VERDICTS = frozenset({"reject", "redirect", "approve"})
+
+
+def kb_write_targets(review: Mapping[str, Any]) -> list[str]:
+    """The proposals whose verdict the KB keeps as a lesson: those the Critic asked to persist, on a verdict worth it."""
+    verdicts = review.get("review_verdicts")
+    if not isinstance(verdicts, list):
+        return []
+    return [
+        item["target_proposal_msg_id"]
+        for item in verdicts
+        if isinstance(item, dict)
+        and isinstance(item.get("target_proposal_msg_id"), str)
+        and item.get("verdict") in _KB_LESSON_VERDICTS
+        and item.get("persist_to_kb")
+    ]
+
+
 async def review_turn(batch: TickBatch, port: Port) -> BrainTurn:
     """Judge the proposals the body has gathered, and ask it to record the ruling.
 
@@ -120,7 +139,13 @@ async def review_turn(batch: TickBatch, port: Port) -> BrainTurn:
         text, finish = "(skipped — no proposals)", "skipped"
     else:
         review, text, finish = await reason(judge_bundle, critic, port.llm[CRITIC_ROLE])
-    record = {"review": review, "raw_text": text, "finish": finish, "judge_bundle": judge_bundle}
+    record = {
+        "review": review,
+        "raw_text": text,
+        "finish": finish,
+        "judge_bundle": judge_bundle,
+        "kb_writes": kb_write_targets(review),
+    }
     return BrainTurn(tool_calls=(ToolCall("verdict.record", record),), brain_state=batch.brain_state)
 
 

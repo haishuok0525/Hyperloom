@@ -167,11 +167,6 @@ REQUEST_ROUTING: dict[str, frozenset[str]] = {
     "orchestration": frozenset({"kernel_agent"}),
 }
 
-
-# Critic-only: REVIEW_VERDICT
-REVIEW_VERDICT_SOURCE_ALLOWLIST: frozenset[str] = frozenset({"critic"})
-
-
 # prune_branch scopes. ``family`` retires the action for the rest of the run;
 # ``queued`` only drains the backlog and leaves the family usable.
 PRUNE_BRANCH_SCOPE_FAMILY: str = "family"
@@ -301,7 +296,7 @@ class PolicyGate:
         elif intent.type == IntentType.REQUEST:
             self._validate_request(role, payload)
         elif intent.type == IntentType.REVIEW_VERDICT:
-            self._validate_review_verdict(role, payload)
+            self._validate_review_verdict(payload)
         elif intent.type == IntentType.EXTEND_LEASE:
             self._validate_extend_lease(payload)
         elif intent.type == IntentType.PRUNE_BRANCH:
@@ -604,18 +599,15 @@ class PolicyGate:
             intent_kind="request",
         )
 
-    def _validate_review_verdict(self, role: "AgentRole", payload: dict[str, Any]) -> None:
-        """Validate a ``REVIEW_VERDICT`` intent (Critic-only).
+    def _validate_review_verdict(self, payload: dict[str, Any]) -> None:
+        """Validate a ``REVIEW_VERDICT`` intent.
 
-        Enforces that the source role is on
-        :data:`REVIEW_VERDICT_SOURCE_ALLOWLIST`, that
-        ``target_proposal_msg_id`` is present, and that exactly one of the
-        single ``verdict`` field or the per-variant ``verdict_map`` is
-        supplied. Every verdict string (single or per-variant) must belong
+        Enforces that ``target_proposal_msg_id`` is present, and that exactly
+        one of the single ``verdict`` field or the per-variant ``verdict_map``
+        is supplied. Every verdict string (single or per-variant) must belong
         to the closed :data:`ALLOWED_VERDICTS` vocabulary.
 
         Args:
-            role (AgentRole): the resolved role of the emitting agent.
             payload (dict[str, Any]): the review_verdict payload, carrying
                 ``target_proposal_msg_id`` and either ``verdict`` or
                 ``verdict_map``.
@@ -624,15 +616,10 @@ class PolicyGate:
             None: returns silently when the verdict is well-formed.
 
         Raises:
-            PolicyDenied: if the role is not a Critic, the target id is
-                missing, neither/both verdict forms are present, or a
-                verdict string is outside ``ALLOWED_VERDICTS``.
+            PolicyDenied: if the target id is missing, neither/both verdict
+                forms are present, or a verdict string is outside
+                ``ALLOWED_VERDICTS``.
         """
-        if role.name not in REVIEW_VERDICT_SOURCE_ALLOWLIST:
-            raise PolicyDenied(
-                f"role={role.name!r} cannot emit review_verdict (allowed: {sorted(REVIEW_VERDICT_SOURCE_ALLOWLIST)!r})",
-                rule="review_verdict_source",
-            )
         target = str(payload.get("target_proposal_msg_id", "")).strip()
         if not target:
             raise PolicyDenied(
@@ -1558,7 +1545,6 @@ __all__ = [
     "validate_freeform_wave_task",
     "validate_specialist_max_turns_raw",
     "REQUEST_ROUTING",
-    "REVIEW_VERDICT_SOURCE_ALLOWLIST",
     "TRACE_PATH_LIKE_FIELDS",
     "SOURCE_LIKE_FIELDS",
 ]
