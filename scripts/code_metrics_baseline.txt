@@ -359,8 +359,6 @@ function-lines src/hyperloom/orchestrator/phases/framework.py::FrameworkPhase._e
 function-lines src/hyperloom/orchestrator/phases/framework.py::FrameworkPhase._maybe_rearm_authored_lane 59
 function-lines src/hyperloom/orchestrator/phases/framework.py::FrameworkPhase._record_framework_agent_authored_outcome 55
 function-lines src/hyperloom/orchestrator/phases/framework.py::FrameworkPhase._submit_framework_agent_candidate_for_review 54
-function-lines src/hyperloom/orchestrator/phases/framework.py::FrameworkPhase.maybe_autosubmit_specialist_patches 61
-function-lines src/hyperloom/orchestrator/phases/framework.py::FrameworkPhase.maybe_reauthor_from_critic_feedback 59
 function-lines src/hyperloom/orchestrator/phases/framework.py::_record_discovered 52
 function-lines src/hyperloom/orchestrator/phases/framework.py::_record_source_attempt 55
 function-lines src/hyperloom/orchestrator/phases/geak_native_revalidation.py::prepare_source_revalidation 57
@@ -621,7 +619,7 @@ module-lines src/hyperloom/orchestrator/knowledge/recipe_journal.py 1268
 module-lines src/hyperloom/orchestrator/loop/coordinator.py 1316
 module-lines src/hyperloom/orchestrator/loop/dispatcher.py 1426
 module-lines src/hyperloom/orchestrator/loop/intent_router.py 1304
-module-lines src/hyperloom/orchestrator/phases/framework.py 3046
+module-lines src/hyperloom/orchestrator/phases/framework.py 3016
 module-lines src/hyperloom/orchestrator/phases/kernel.py 3970
 module-lines src/hyperloom/orchestrator/phases/machine_state.py 1914
 module-lines src/hyperloom/orchestrator/phases/prelude.py 2477

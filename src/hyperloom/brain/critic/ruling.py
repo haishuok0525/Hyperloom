@@ -195,7 +195,7 @@ def verdict_outcome(verdict: str, action_name: str, payload: Mapping[str, Any]) 
     params = payload.get("params") or {}
     if verdict == _REJECT_VERDICT and action_name == _INTEGRATE_PATCH and bool(params.get("enablement")):
         return VerdictOutcome.REARM_ENABLEMENT
-    if verdict == _NEEDS_REVIEW_VERDICT:
+    if verdict == _NEEDS_REVIEW_VERDICT and action_name == _INTEGRATE_PATCH:
         return VerdictOutcome.REAUTHOR
     return VerdictOutcome.NONE
 

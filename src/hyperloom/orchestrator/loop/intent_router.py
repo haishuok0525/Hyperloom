@@ -728,7 +728,7 @@ class IntentRouter(CoordinatorCollaborator):
             pending,
             materialized=ruling.outcome == VerdictOutcome.MATERIALIZE,
             denied=verdict == "reject",
-            reauthored=ruling.outcome == VerdictOutcome.REAUTHOR,
+            reauthored=verdict == "needs_review",
             patch_verdict_key=sid_candidate if patch_verdict else "",
         )
         with trajectory_span(

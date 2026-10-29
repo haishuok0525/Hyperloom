@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from hyperloom.brain_api import BrainContractError, BrainTurn, ToolCall, VerdictOutcome
-from hyperloom.orchestrator.loop import verdict_settlement
+from hyperloom.orchestrator import brain_link
 from hyperloom.orchestrator.loop.verdict_settlement import VerdictHold, settle_verdict, settlement_request
 from hyperloom.orchestrator.policy import gate
 
@@ -29,7 +29,7 @@ class _Brain:
 
 def _plug(monkeypatch, turn: BrainTurn) -> _Brain:
     brain = _Brain(turn)
-    monkeypatch.setattr(verdict_settlement, "resolve_brain", lambda: brain)
+    monkeypatch.setattr(brain_link, "resolve_brain", lambda: brain)
     return brain
 
 
