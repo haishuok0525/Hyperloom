@@ -107,6 +107,9 @@ def _catalogue() -> dict[str, ToolSpec]:
         ToolSpec("phase.request_exit", ToolKind.CONTROL, _BOTH),
         # One intent a model turn emitted, ``{"intent_type", "payload"}``, handed to the body's intent router whole.
         ToolSpec("intent.route", ToolKind.CONTROL, _LLM_ONLY),
+        # The last inbox message a composed prompt showed, ``{"seq"}``; the body advances its cursor there once the
+        # turn has run, and holds the rest for the next one.
+        ToolSpec("inbox.rendered", ToolKind.CONTROL, _STRATEGY_ONLY),
     ]
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH if a in _LLM_ACTIONS else _STRATEGY_ONLY) for a in _ACTIONS]
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH, transitional=True) for a in _TRANSITIONAL_ACTIONS]

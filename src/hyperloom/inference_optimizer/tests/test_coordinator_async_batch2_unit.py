@@ -35,6 +35,7 @@ from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
 from hyperloom.orchestrator.actions.executors import _patch_artifacts as patch_artifacts
 from hyperloom.orchestrator.actions.executors import _patch_sources as patch_sources
 from hyperloom.orchestrator.loop.verdicts import CriticRuling
+from hyperloom.inference_optimizer.tests._orchestration_prompt import compose_prompt
 
 
 def _idle_intent() -> Intent:
@@ -2210,7 +2211,7 @@ async def test_compose_prompt_has_no_specialist_status_block(coord: Coordinator)
         ),
     )
     await coord.tasks.transition(spec.task_id, "running")
-    out = (await coord.conversation.compose_prompt("orchestration")).text
+    out = (await compose_prompt(coord.conversation, "orchestration")).text
     assert "Specialist health" not in out
     assert "stale" not in out.lower()
 

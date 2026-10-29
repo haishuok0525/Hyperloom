@@ -22,6 +22,7 @@ from hyperloom.orchestrator.policy.gate import (
 from hyperloom.orchestrator.state._shared_state.enablement_round import EnablementRound
 from hyperloom.orchestrator.state.shared_state import SharedState
 from hyperloom.inference_optimizer.session.paths import make_session_dir
+from hyperloom.inference_optimizer.tests._orchestration_prompt import compose_prompt
 
 from ._geak_helpers import stop_geak_before_launch
 
@@ -840,7 +841,7 @@ def _enter_framework_for(c, elapsed_sec: float) -> None:
 
 
 async def _phase_block(c) -> str:
-    prompt = (await c.conversation.compose_prompt("orchestration")).text
+    prompt = (await compose_prompt(c.conversation, "orchestration")).text
     return prompt.split("=== Phase ===", 1)[1]
 
 

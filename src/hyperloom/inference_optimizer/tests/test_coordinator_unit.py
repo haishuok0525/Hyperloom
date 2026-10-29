@@ -7,7 +7,7 @@ from __future__ import annotations
 
 
 from hyperloom.orchestrator.loop.dispatcher import DispatcherCollaborator
-from hyperloom.orchestrator.loop.conversation import _first_present, _format_inbox_event
+from hyperloom.orchestrator.loop.inbox_lines import _first_present, _format_inbox_event
 from hyperloom.orchestrator.loop.kernel_request import lifecycle_paths
 from hyperloom.orchestrator.bus.message_bus import Message
 from hyperloom.orchestrator.state.gaps import GapRefreshCollaborator

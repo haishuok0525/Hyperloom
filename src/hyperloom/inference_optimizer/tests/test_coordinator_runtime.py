@@ -47,6 +47,7 @@ from hyperloom.orchestrator.bus.resource_lock import (
 from hyperloom.orchestrator.loop.dispatcher import DispatcherCollaborator
 from hyperloom.inference_optimizer.session.session_paths import target_baseline_json
 from hyperloom.orchestrator.bus.storage import SqliteConnection
+from hyperloom.inference_optimizer.tests._orchestration_prompt import compose_prompt
 from ._dispatch_helpers import pump_until_settled
 
 
@@ -1030,7 +1031,7 @@ async def test_orchestration_prompt_has_no_execution_checklist(session_dir):
         c.shared_state.last_profile_trace = ""
         c.shared_state.save(session_dir)
 
-        prompt = (await c.conversation.compose_prompt("orchestration")).text
+        prompt = (await compose_prompt(c.conversation, "orchestration")).text
 
         assert "Execution checklist" not in prompt
     finally:

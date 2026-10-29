@@ -1090,9 +1090,7 @@ class Coordinator:
         call_id = new_call_id()
         try:
             called = await self._reactor_models.run(
-                ReactorTurn(agent_name, backend, turn.prompt, turn.system_prompt, request, tools, call_id),
-                tick=int(self.shared_state.tick or 0),
-                phase=self.shared_state.phase or "",
+                ReactorTurn(agent_name, backend, turn, request, tools, call_id), self.shared_state, self.conversation
             )
         except BackendError as exc:
             if isinstance(exc, LLMCallFailed) and not backend_self_traces:
@@ -1140,7 +1138,7 @@ class Coordinator:
         latency_ms = int((time.perf_counter() - _t0) * 1000)
         self._trace_reactor_llm_call(agent_name, result, latency_ms=latency_ms)
         # Full-trace: persist the redacted prompt+response for this turn.
-        self.conversation.record_reactor_conversation(agent_name, result, context=turn.context)
+        self.conversation.record_reactor_conversation(agent_name, result, context=called.context)
         with trajectory_scope(call_id=call_id, parent_span_id=called.span_id):
             for intent in result.intents:
                 await self.router.handle_intent(agent_name, intent)

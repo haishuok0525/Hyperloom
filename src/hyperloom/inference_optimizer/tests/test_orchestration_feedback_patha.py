@@ -11,9 +11,10 @@ from hyperloom.orchestrator.roles.mcp_context_tools import (
     ContextProvider,
 )
 from hyperloom.orchestrator.loop.coordinator import Coordinator
-from hyperloom.orchestrator.loop.conversation import _first_present, _format_inbox_event
+from hyperloom.orchestrator.loop.inbox_lines import _first_present, _format_inbox_event
 from hyperloom.orchestrator.bus.message_bus import Message
 from hyperloom.inference_optimizer.session.paths import make_session_dir
+from hyperloom.inference_optimizer.tests._orchestration_prompt import compose_prompt
 
 
 # A1 — structured inbox formatter
@@ -375,7 +376,7 @@ async def test_compose_prompt_orchestration_receives_failure_rows(session_dir):
                 },
             )
         )
-        prompt = (await c.conversation.compose_prompt("orchestration")).text
+        prompt = (await compose_prompt(c.conversation, "orchestration")).text
         assert "failure:" in prompt
     finally:
         await c.stop()
@@ -409,7 +410,7 @@ async def test_compose_prompt_critic_does_not_receive_failure_rows(session_dir):
                 },
             )
         )
-        prompt = (await c.conversation.compose_prompt("critic")).text
+        prompt = (await compose_prompt(c.conversation, "critic")).text
         assert "failure:" not in prompt
     finally:
         await c.stop()

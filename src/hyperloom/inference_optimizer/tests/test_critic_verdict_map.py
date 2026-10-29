@@ -480,7 +480,7 @@ async def test_an_approve_after_the_timeout_deny_creates_nothing(coord):
 @pytest.mark.asyncio
 async def test_single_verdict_rebroadcast_carries_full_advisory_fieldset(coord):
     """The rebroadcast payload and the compact inbox line both flow through the one serializer, carrying the full advisory field set."""
-    from hyperloom.orchestrator.loop.conversation import _format_inbox_event
+    from hyperloom.orchestrator.loop.inbox_lines import _format_inbox_event
     from hyperloom.orchestrator.bus.message_bus import Message
 
     pending = PendingProposal(
@@ -536,7 +536,7 @@ async def test_single_verdict_rebroadcast_carries_full_advisory_fieldset(coord):
 @pytest.mark.asyncio
 async def test_single_verdict_without_advisory_keeps_bare_payload(coord):
     """A verdict with no advisory fields rebroadcasts only verdict/reasoning, and the inbox line stays minimal."""
-    from hyperloom.orchestrator.loop.conversation import _format_inbox_event
+    from hyperloom.orchestrator.loop.inbox_lines import _format_inbox_event
     from hyperloom.orchestrator.bus.message_bus import Message
 
     pending = PendingProposal(
