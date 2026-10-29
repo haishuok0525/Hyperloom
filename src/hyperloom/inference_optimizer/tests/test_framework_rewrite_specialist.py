@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 from hyperloom.orchestrator.actions.executors._framework_switch_manifest import KNOWN_CATEGORIES
-from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-    SpecialistPromptInputs,
+from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+from hyperloom.inference_optimizer.tests._brief import (
     _DOMAIN_FOCUS_TEMPLATES,
     _focus_framework_rewrite_specialist,
     build_specialist_prompts,

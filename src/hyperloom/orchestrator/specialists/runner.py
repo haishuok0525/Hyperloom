@@ -73,7 +73,7 @@ from hyperloom.inference_optimizer.framework_paths import (
 from ..loop.sub_agent_runner import RunnerContext
 from ..prompts.specialist_prompt_builder import (
     SpecialistPromptInputs,
-    build_specialist_prompts,
+    brief_from_brain,
 )
 
 
@@ -743,7 +743,7 @@ class SpecialistRunner:
                 custom_specialist_prompt=custom_specialist_prompt,
             )
 
-        system_prompt, user_prompt = build_specialist_prompts(prompt_inputs)
+        system_prompt, user_prompt = await brief_from_brain(prompt_inputs)
         self._write_prompt(workspace, system_prompt, user_prompt)
         self._write_heartbeat(
             workspace,

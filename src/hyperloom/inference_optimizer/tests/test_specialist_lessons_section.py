@@ -16,12 +16,8 @@ from hyperloom.orchestrator.loop.coordinator import Coordinator
 from hyperloom.orchestrator.specialists.domains import (
     get_domain,
 )
-from hyperloom.orchestrator.prompts.specialist_prompt_builder import (
-    SpecialistPromptInputs,
-    _section_lessons,
-    _section_pitfalls,
-    build_specialist_prompts,
-)
+from hyperloom.orchestrator.prompts.specialist_prompt_builder import SpecialistPromptInputs
+from hyperloom.inference_optimizer.tests._brief import _section_lessons, _section_pitfalls, build_specialist_prompts
 
 
 def _make_coord(tmp_path: Path, *, state: SharedState) -> Coordinator:
