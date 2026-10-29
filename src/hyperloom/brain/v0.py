@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, LlmHandle, TickBatch
+from hyperloom.brain.critic import CRITIC_ROLE, review_turn
+from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
 
 
 class BrainV0:
@@ -22,14 +23,16 @@ class BrainV0:
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = dict(config)
 
-    async def on_llm_turn(self, batch: TickBatch, llm: Mapping[str, LlmHandle]) -> BrainTurn:
-        """No model turn has moved yet."""
+    async def on_llm_turn(self, batch: TickBatch, port: Port) -> BrainTurn:
+        """The Critic turn; the orchestration turn has not moved yet."""
+        if CRITIC_ROLE in port.llm:
+            return await review_turn(batch, port)
         return BrainTurn(brain_state=batch.brain_state)
 
-    async def on_settlement(self, batch: TickBatch, llm: Mapping[str, LlmHandle]) -> BrainTurn:
+    async def on_settlement(self, batch: TickBatch, port: Port) -> BrainTurn:
         """No settlement follow-up has moved yet."""
         return BrainTurn(brain_state=batch.brain_state)
 
-    async def on_phase_pump(self, batch: TickBatch, llm: Mapping[str, LlmHandle]) -> BrainTurn:
+    async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
         """No phase strategy has moved yet."""
         return BrainTurn(brain_state=batch.brain_state)

@@ -1,26 +1,29 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""What a Critic turn's proposals have to be judged against, stamped onto the judge bundle before it is reasoned over."""
+"""What a Critic turn's proposals have to be judged against, stamped onto the judge bundle before it is reasoned over.
+
+The rules themselves are the body's: it enforces them, so it hands their descriptors over in ``rules``, together with
+the lever it classified each proposal under. What is said to the model about them is decided here.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, Sequence
 
-from hyperloom.orchestrator.lever import (
-    LEVER_CONFIG,
-    LEVER_ENABLEMENT,
-    LEVER_SOURCE_PATCH,
-    LEVER_UPSTREAM_PR,
-    patch_lever_kind,
-)
+_LEVER_CONFIG = "config"
+_LEVER_SOURCE_PATCH = "source_patch"
+_LEVER_UPSTREAM_PR = "upstream_pr"
+_LEVER_ENABLEMENT = "enablement"
 
 
 def apply_review_constraints(
     judge_bundle: dict[str, Any],
     *,
     phase: str,
-    action_verdict_policy: dict[str, str],
+    action_verdict_policy: Mapping[str, str],
+    rules: Mapping[str, Any],
+    proposal_levers: Sequence[str],
 ) -> None:
     """Stamp this turn's review constraints onto the judge bundle: policy, phase, lever and the advisory rules."""
     if action_verdict_policy:
@@ -29,11 +32,11 @@ def apply_review_constraints(
             rc = {}
             judge_bundle["review_constraints"] = rc
         rc["action_verdict_policy"] = dict(action_verdict_policy)
-    _inject_phase_constraints(judge_bundle, phase)
+    inject_phase_constraints(judge_bundle, phase)
     # The lever says what a KEEP has to clear; the phase cannot, since one phase carries several levers.
-    _inject_lever_orientation(judge_bundle, _first_proposal(judge_bundle))
-    _maybe_inject_cross_domain_constraints(judge_bundle)
-    _maybe_inject_quantitative_claim_constraint(judge_bundle)
+    _inject_lever_orientation(judge_bundle, proposal_levers[0] if _first_proposal(judge_bundle) is not None else "")
+    _maybe_inject_cross_domain_constraints(judge_bundle, rules)
+    _maybe_inject_quantitative_claim_constraint(judge_bundle, rules)
 
 
 def _first_proposal(judge_bundle: dict[str, Any]) -> dict[str, Any] | None:
@@ -61,7 +64,7 @@ def _proposal_scope_literal(proposal: dict[str, Any]) -> str:
 
 
 # Per-phase review orientation; only the live phase's entry is injected.
-_PHASE_ORIENTATION: dict[str, str] = {
+PHASE_ORIENTATION: dict[str, str] = {
     "PRELUDE": (
         "Typical proposals are `target_analysis` and `baseline`. If something "
         "else slips through (PolicyGate R1 should already have blocked it), "
@@ -103,23 +106,23 @@ _PHASE_ORIENTATION: dict[str, str] = {
 #: several levers, so a phase-keyed entry telling the Critic that flat gain is a
 #: legitimate KEEP would extend that to configuration search. The deterministic
 #: layer routes on payload markers rather than phase; this matches it.
-_LEVER_ORIENTATION: dict[str, str] = {
-    LEVER_UPSTREAM_PR: (
+LEVER_ORIENTATION: dict[str, str] = {
+    _LEVER_UPSTREAM_PR: (
         "This lands an upstream diff nobody here wrote. Judge whether it is "
         "worth measuring and whether it can be rolled back — the measurement "
         "itself is the executor's gate, not yours."
     ),
-    LEVER_ENABLEMENT: (
+    _LEVER_ENABLEMENT: (
         "The gate here is runnability plus the accuracy floor, not throughput: "
         "a candidate that boots and holds accuracy is a legitimate KEEP even at "
         "flat gain. Pre-boot, the production evidence cannot exist yet."
     ),
-    LEVER_SOURCE_PATCH: (
+    _LEVER_SOURCE_PATCH: (
         "A patch written for this session. It changes the source tree, so "
         "rollback and blast radius carry the weight; throughput is measured "
         "afterwards and is not yours to predict."
     ),
-    LEVER_CONFIG: (
+    _LEVER_CONFIG: (
         "Server arguments and environment only — nothing on disk changes and a "
         "revert is a non-composition. Judge the reasoning and the accuracy "
         "risk; the cost of being wrong is one bench."
@@ -127,13 +130,9 @@ _LEVER_ORIENTATION: dict[str, str] = {
 }
 
 
-def _inject_lever_orientation(judge_bundle: dict[str, Any], payload: dict[str, Any] | None) -> None:
+def _inject_lever_orientation(judge_bundle: dict[str, Any], lever: str) -> None:
     """Stamp the orientation for the lever this proposal moves, when known."""
-    lever = patch_lever_kind(payload if isinstance(payload, dict) else None)
-    if not lever:
-        params = (payload or {}).get("params") if isinstance(payload, dict) else None
-        lever = patch_lever_kind(params if isinstance(params, dict) else None)
-    orientation = _LEVER_ORIENTATION.get(lever)
+    orientation = LEVER_ORIENTATION.get(lever)
     if not orientation:
         return
     rc = judge_bundle.setdefault("review_constraints", {})
@@ -141,28 +140,23 @@ def _inject_lever_orientation(judge_bundle: dict[str, Any], payload: dict[str, A
     rc["lever_orientation"] = orientation
 
 
-def _inject_phase_constraints(judge_bundle: dict[str, Any], phase: str) -> None:
+def inject_phase_constraints(judge_bundle: dict[str, Any], phase: str) -> None:
     """Stamp the live phase and its review orientation onto the judge bundle."""
     normalized = (phase or "").strip().upper()
-    if normalized not in _PHASE_ORIENTATION:
+    if normalized not in PHASE_ORIENTATION:
         return
     judge_bundle["phase"] = normalized
     rc = judge_bundle.setdefault("review_constraints", {})
     rc["phase"] = normalized
-    rc["phase_orientation"] = _PHASE_ORIENTATION[normalized]
+    rc["phase_orientation"] = PHASE_ORIENTATION[normalized]
 
 
-def _maybe_inject_cross_domain_constraints(judge_bundle: dict[str, Any]) -> None:
-    """Set ``review_constraints.cross_domain`` + rule descriptors when any proposal is cross-domain (unified ``scope == 'domains'`` dial)."""
+def _maybe_inject_cross_domain_constraints(judge_bundle: dict[str, Any], rules: Mapping[str, Any]) -> None:
+    """Set ``review_constraints.cross_domain`` + rule descriptors when any proposal is cross-domain."""
     proposals = judge_bundle.get("proposals") or []
     if not isinstance(proposals, list):
         return
-    from ..specialists.patch_safety import (
-        SCOPE_DOMAINS_LITERAL,
-        cross_domain_rule_descriptors,
-    )
-
-    has_cross_domain = any(_proposal_scope_literal(p) == SCOPE_DOMAINS_LITERAL for p in proposals)
+    has_cross_domain = any(_proposal_scope_literal(p) == rules["scope_domains"] for p in proposals)
     if not has_cross_domain:
         return
     rc = judge_bundle.setdefault("review_constraints", {})
@@ -170,24 +164,22 @@ def _maybe_inject_cross_domain_constraints(judge_bundle: dict[str, Any]) -> None
         rc = {}
         judge_bundle["review_constraints"] = rc
     rc["cross_domain"] = True
-    rc["cross_domain_rules"] = cross_domain_rule_descriptors()
+    rc["cross_domain_rules"] = [dict(r) for r in rules["cross_domain_rules"]]
 
 
-def _maybe_inject_quantitative_claim_constraint(judge_bundle: dict[str, Any]) -> None:
-    """Set ``review_constraints.quantitative_claim_rule`` from the enforced list."""
-    from ..specialists.patch_safety import (
-        advisory_rules_govern,
-        quantitative_claim_rule_descriptor,
-    )
-
+def _maybe_inject_quantitative_claim_constraint(judge_bundle: dict[str, Any], rules: Mapping[str, Any]) -> None:
+    """Set ``review_constraints.quantitative_claim_rule`` when an advisory rule speaks about a proposal."""
     proposals = judge_bundle.get("proposals") or []
     if not isinstance(proposals, list):
         return
-    governed = any(advisory_rules_govern(str(p.get("action_name") or "")) for p in proposals if isinstance(p, dict))
+    governed_actions = frozenset(rules["advisory_rule_actions"])
+    governed = any(
+        str(p.get("action_name") or "").strip() in governed_actions for p in proposals if isinstance(p, dict)
+    )
     if not governed:
         return
     rc = judge_bundle.setdefault("review_constraints", {})
     if not isinstance(rc, dict):
         rc = {}
         judge_bundle["review_constraints"] = rc
-    rc["quantitative_claim_rule"] = quantitative_claim_rule_descriptor()
+    rc["quantitative_claim_rule"] = dict(rules["quantitative_claim_rule"])

@@ -18,10 +18,11 @@ def json_value(value: Any, where: str) -> Any:
     """Return ``value`` as it reads back from JSON; refuse anything that would not survive the round trip.
 
     Tuples become lists, mapping keys must already be strings, and floats must be finite. A live object (a task
-    handle, a path, a dataclass) is refused rather than stringified, so nothing leaks through by accident.
+    handle, a path, a dataclass) is refused rather than stringified, so nothing leaks through by accident. Key order
+    is kept: a brain that renders a mapping into a prompt sees it in the order the body built it.
     """
     try:
-        text = json.dumps(value, allow_nan=False, sort_keys=True, default=_refuse)
+        text = json.dumps(value, allow_nan=False, default=_refuse)
     except (TypeError, ValueError) as exc:
         raise WireError(f"{where}: {exc}") from None
     decoded = json.loads(text)

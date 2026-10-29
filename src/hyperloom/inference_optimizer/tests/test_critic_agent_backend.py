@@ -21,15 +21,19 @@ from hyperloom.orchestrator.roles import (
 )
 from hyperloom.orchestrator.roles.base import BackendError, LLMCallFailed
 from hyperloom.common.llm_config import AnthropicMessageResult
+from hyperloom.brain.critic.review import (
+    REVIEW_OUTPUT_INSTRUCTIONS as _REVIEW_OUTPUT_INSTRUCTIONS,
+    TRUNCATION_RETRY_FACTOR as CRITIC_AGENT_TRUNCATION_RETRY_FACTOR,
+    extract_review_json as _extract_review_json,
+    is_truncated_finish as _is_truncated_finish,
+    reason,
+)
 from hyperloom.orchestrator.roles.critic_agent import (
     CRITIC_AGENT_LLM_CONNECT_TIMEOUT_SEC,
     CRITIC_AGENT_LLM_RW_TIMEOUT_SEC,
     CRITIC_AGENT_MAX_COMPLETION_TOKENS,
-    CRITIC_AGENT_TRUNCATION_RETRY_FACTOR,
-    _REVIEW_OUTPUT_INSTRUCTIONS,
+    _CriticTurnPort,
     _default_runtime_caller,
-    _extract_review_json,
-    _is_truncated_finish,
     _reviewed_msg_ids_from_bundle,
     _verdict_references_kb,
 )
@@ -1887,7 +1891,13 @@ async def test_critic_cache_blocks_preserve_transport_prompt(
     )
     recorded = []
     monkeypatch.setattr(CriticAgentBackend, "_record_critic_conversation", lambda self, **kw: recorded.append(kw))
-    result, _, _ = await backend._reason(judge_bundle=bundle, system_prompt="critic system")
+    port = _CriticTurnPort(
+        backend,
+        request_path=fake_session_dir / "request.json",
+        judge_path=fake_session_dir / "judge.json",
+        env={},
+    )
+    result, _, _ = await reason(bundle, backend._brain_inputs("critic system"), port.llm["critic"])
     assert result["review_verdicts"][0]["verdict"] == "approve"
     assert len(observed) == len(recorded) == 1
     view = {
@@ -2285,3 +2295,113 @@ async def test_a_failing_iteration_record_propagates_from_the_turn(
 
     with pytest.raises(RuntimeError, match="critic record bug"):
         await backend.run(prompt="=== inbox ===\n", system_prompt="You are critic.")
+
+
+# The brain seam: the backend asks the plugged brain for the ruling
+
+
+_SCRIPTED_BRAIN = """
+from hyperloom.brain_api import BrainTurn, ToolCall
+
+class Brain:
+    name = "scripted"
+    contract_version = "1.0"
+
+    def __init__(self, config):
+        self.tool = config.get("tool", "verdict.record")
+
+    async def on_llm_turn(self, batch, port):
+        prepared = await port.call(ToolCall("kb.critic.read", {}))
+        target = prepared["judge_bundle"]["proposals"][0]["msg_id"]
+        review = {"review_verdicts": [{"target_proposal_msg_id": target, "verdict": "reject", "reasoning": "scripted"}]}
+        args = {"review": review, "raw_text": "scripted", "finish": "scripted", "judge_bundle": prepared["judge_bundle"]}
+        if self.tool != "verdict.record":
+            args = {}
+        return BrainTurn(tool_calls=(ToolCall(self.tool, args),))
+
+    async def on_settlement(self, batch, port):
+        return BrainTurn()
+
+    async def on_phase_pump(self, batch, port):
+        return BrainTurn()
+
+def create_brain(config):
+    return Brain(config)
+"""
+
+
+@pytest.fixture
+def scripted_brain(tmp_path, monkeypatch):
+    """Activate a plug host whose ``brain`` socket holds the scripted brain, configured by ``configs``."""
+    import uuid
+
+    from hyperloom.plugs.builtin import builtin_registry
+    from hyperloom.plugs.host import PlugHost, activated
+    from hyperloom.plugs.manifest import ManifestSources, resolve_manifest
+
+    module = f"scripted_brain_{uuid.uuid4().hex}"
+    (tmp_path / f"{module}.py").write_text(_SCRIPTED_BRAIN, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    def activate(*configs: str):
+        registry = builtin_registry()
+        sources = ManifestSources(cli_plugs=("brain=v0",), cli_configs=(f"brain.module={module}", *configs))
+        host = PlugHost(resolve_manifest(registry, sources), registry, session_dir=None, env={})
+        host.start()
+        return activated(host)
+
+    return activate
+
+
+@pytest.mark.asyncio
+async def test_a_plugged_brain_rules_and_the_backend_commits_its_ruling(
+    fake_critic_root, fake_session_dir, recorded_iterations, scripted_brain
+):
+    calls: list[RuntimeCall] = []
+    backend, client = _make_backend(
+        fake_critic_root,
+        fake_session_dir,
+        codex_replies=[],
+        judge_bundle=_minimal_judge_bundle(),
+        runtime_calls=calls,
+    )
+    with scripted_brain():
+        result = await backend.run(prompt="=== inbox ===\n", system_prompt="You are critic.")
+
+    assert client.completions.calls == []
+    assert [c.phase for c in calls] == ["prepare-review", "commit-review"]
+    (intent,) = result.intents
+    assert (intent.payload["target_proposal_msg_id"], intent.payload["verdict"]) == ("p1", "reject")
+    assert result.raw_text == "scripted"
+    assert json.loads((calls[1].review_path).read_text(encoding="utf-8"))["review_verdicts"][0]["reasoning"] == (
+        "scripted"
+    )
+    assert recorded_iterations[0].judge_bundle["proposals"][0]["msg_id"] == "p1"
+
+
+@pytest.mark.asyncio
+async def test_a_brain_that_asks_a_critic_turn_for_another_tool_is_refused(
+    fake_critic_root, fake_session_dir, recorded_iterations, scripted_brain
+):
+    backend, _ = _make_backend(
+        fake_critic_root, fake_session_dir, codex_replies=[], judge_bundle=_minimal_judge_bundle()
+    )
+    with scripted_brain('brain.tool="task.prune"'), pytest.raises(BackendError, match="records one ruling"):
+        await backend.run(prompt="=== inbox ===\n", system_prompt="You are critic.")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_review_call_surfaces_as_the_body_error_it_was(
+    fake_critic_root, fake_session_dir, recorded_iterations
+):
+    backend, client = _make_backend(
+        fake_critic_root, fake_session_dir, codex_replies=[], judge_bundle=_minimal_judge_bundle()
+    )
+
+    async def refuse(**_kwargs):
+        raise RuntimeError("provider down")
+
+    client.completions.create = refuse
+    with pytest.raises(LLMCallFailed, match="provider down") as caught:
+        await backend.run(prompt="=== inbox ===\n", system_prompt="You are critic.")
+    assert type(caught.value) is LLMCallFailed
