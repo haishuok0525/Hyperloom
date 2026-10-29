@@ -105,6 +105,8 @@ def _catalogue() -> dict[str, ToolSpec]:
         ToolSpec("message.request", ToolKind.CONTROL, _LLM_ONLY),
         ToolSpec("verdict.record", ToolKind.CONTROL, _BOTH),
         ToolSpec("phase.request_exit", ToolKind.CONTROL, _BOTH),
+        # One intent a model turn emitted, ``{"intent_type", "payload"}``, handed to the body's intent router whole.
+        ToolSpec("intent.route", ToolKind.CONTROL, _LLM_ONLY),
     ]
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH if a in _LLM_ACTIONS else _STRATEGY_ONLY) for a in _ACTIONS]
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH, transitional=True) for a in _TRANSITIONAL_ACTIONS]
