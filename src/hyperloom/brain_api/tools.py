@@ -114,6 +114,48 @@ _PUMP_STEPS = (
 )
 
 
+def _phase_strategy_tools() -> tuple[ToolSpec, ...]:
+    """The FRAMEWORK candidate track, its discovery, the untested-proposal bench and the predictor."""
+    return (
+        # The FRAMEWORK candidate track. Candidate ids in flight, ``{}`` -> ``{"ids"}``; the next unprocessed candidate
+        # outside ``exclude``, ``{"exclude"}`` -> ``{"found", "id"}``; whether an authored patch for an unprocessed
+        # candidate is still out, ``{}`` -> ``{"inflight"}``; whether the source arm has gone dry, ``{}`` ->
+        # ``{"plateaued"}``.
+        ToolSpec("query.framework_inflight_candidates", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.framework_next_candidate", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.framework_authoring_inflight", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.source_arm_plateau", ToolKind.QUERY, _STRATEGY_ONLY),
+        # Submit a candidate for review, ``{"id"}`` -> ``{"id"}`` (its key once submitted); ask for candidate
+        # discovery or a local source exploration, ``{"reason"}`` -> ``{"dispatched"}``; close the candidate track,
+        # ``{"reason"}``.
+        ToolSpec("framework.submit_candidate", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("framework.discover", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("framework.local_explore", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("framework.phase_done", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # Whether a discovery round is queued or running, ``{}`` -> ``{"inflight"}``; dispatch one, ``{}``; or count
+        # the one in flight as this ask's, ``{}``.
+        ToolSpec("query.candidate_discovery_inflight", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("discovery.dispatch", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("discovery.wait", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # The untested-proposal bench. Dispatch admission, ``{}`` -> ``{"frozen", "paused"}``; the queue,
+        # ``{}`` -> ``{"explores", "custom_rows", "operator_work"}``; untested non-operator rows, ``{}`` ->
+        # ``{"count"}``; bench one grid of the ``"custom"`` or ``"untested"`` rows, ``{"rows", "limit"}`` ->
+        # ``{"created"}``.
+        ToolSpec("query.dispatch_admission", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.bench_queue", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.untested_rows", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("bench.enqueue", ToolKind.JOB, _STRATEGY_ONLY),
+        # The predictor. The phase's headroom, ``{}`` -> ``{"headroom_sec"}`` (``None`` when unbounded); the re-profile
+        # the decision point is held for, ``{}`` -> ``{"pending", "held_sec"}``; ask it, ``{}``; do not, with the
+        # reason, ``{"reason"}``; hold FRAMEWORK entry for its answer, ``{"timeout_sec"}``.
+        ToolSpec("query.phase_headroom", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.profile_hold", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("predictor.ask", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("predictor.skip", ToolKind.CONTROL, _STRATEGY_ONLY),
+        ToolSpec("predictor.wait", ToolKind.CONTROL, _STRATEGY_ONLY),
+    )
+
+
 def _catalogue() -> dict[str, ToolSpec]:
     specs = [
         ToolSpec("candidate.apply", ToolKind.JOB, _STRATEGY_ONLY),
@@ -180,7 +222,7 @@ def _catalogue() -> dict[str, ToolSpec]:
     specs += [ToolSpec(f"action.{a}", ToolKind.JOB, _BOTH, transitional=True) for a in _TRANSITIONAL_ACTIONS]
     specs += [ToolSpec(f"query.{q}", ToolKind.QUERY, _BOTH) for q in QUERY_NAMES]
     specs += [ToolSpec(f"pump.{p}", ToolKind.JOB, _STRATEGY_ONLY, transitional=True) for p in _PUMP_STEPS]
-    return {s.name: s for s in specs}
+    return {s.name: s for s in (*specs, *_phase_strategy_tools())}
 
 
 TOOLS: Mapping[str, ToolSpec] = MappingProxyType(_catalogue())

@@ -22,6 +22,7 @@ from hyperloom.inference_optimizer import framework_registry
 from . import machine_state as _phase_state
 from ..brain_link import DecisionPort, QueryAnswer, ask_brain, one_decision
 from .framework_pump import FRAMEWORK_PUMP_KEY, framework_pump_steps
+from .framework_track import discovery_decision, run_auto_bench, run_framework_agent_track
 from .specialist_delivery import (
     CONFIG_DELIVERY_KEY,
     PATCH_DELIVERY_KEY,
@@ -47,7 +48,7 @@ from hyperloom.inference_optimizer.grid_server_args import tokenize_server_args_
 from ..actions.executors import _integrate_vocabulary
 from hyperloom.common.framework_arm import LOCAL_EXPLORE_CANDIDATE_PREFIX
 from hyperloom.orchestrator.lever import LEVER_SOURCE_PATCH, LEVER_UPSTREAM_PR, patch_lever_kind, patch_owner_phase
-from .proposal_bench import CUSTOM_PROPOSAL_DOMAIN, ProposalBench, kb_exposure_of
+from .proposal_bench import ProposalBench, kb_exposure_of
 
 log = _logging.getLogger(__name__)
 
@@ -188,7 +189,8 @@ def _resolvable_artifacts_from_done(
     return out
 
 
-#: Consecutive empty discovery rounds tolerated before the source arm declines.
+#: Consecutive empty discovery rounds tolerated before the source arm declines, as records report it; the brain's
+#: discovery strategy applies its own.
 DISCOVER_FAILURE_RETRY_LIMIT: int = 3
 
 
@@ -1022,64 +1024,14 @@ class FrameworkPhase(ProposalBench):
         return in_flight
 
     async def _pump_framework_agent_phase(self) -> None:
-        """Drive the FRAMEWORK_AGENT phase: submit candidates for review in parallel.
+        """Drive the FRAMEWORK_AGENT phase: the brain submits candidates for review in parallel.
 
         Up to ``research_lane_capacity`` candidates are in flight at once; landing still serialises on
         ``workspace_mutation``. The discovery → local-explore → phase-done fallback runs only once no candidate is
         left and none is in flight; the local-explore rung is skipped once the source lever reads dry. Idempotent; a
         discover failure flips ``framework_agent_phase_done`` so the phase advances rather than wedging.
         """
-        state = self.shared_state
-        if (state.phase or "").strip().upper() != _phase_state.PHASE_FRAMEWORK_AGENT:
-            return
-        if bool(state.framework_agent_phase_done):
-            return
-        in_flight_ids = self._authoring_inflight_candidate_ids(await self.tasks.queued(), await self.tasks.running())
-        submitted = False
-        while len(in_flight_ids) < max(1, state.research_lane_capacity):
-            candidate = self._select_next_framework_agent_candidate(exclude_ids=in_flight_ids)
-            if candidate is None:
-                break
-            await self._submit_framework_agent_candidate_for_review(
-                candidate,
-                audit=dict(candidate.get("audit") or {}),
-                audit_step=str(candidate.get("route") or "author_via_specialist"),
-            )
-            in_flight_ids.add(self._framework_candidate_key(candidate))
-            submitted = True
-        if submitted or in_flight_ids or await self._framework_agent_authoring_inflight():
-            return
-        # Minimum supply: with the pool empty and no discovery in flight, ask for one.
-        if await self._maybe_enqueue_candidate_discovery(reason="candidate_pool_empty"):
-            state.save(self.session_dir)
-            return
-        source_dry = _phase_state.per_lever_dryness(state)[1]["source_arm_plateaued"]
-        if self.shared_state.framework_local_explore_enabled and not source_dry:
-            gap, keywords = self._compose_framework_local_explore_gap()
-            title = (
-                f"local source exploration ({gap})"
-                if gap
-                else "local source exploration (author a throughput patch from live source + profile)"
-            )
-            dispatched = await self._enqueue_framework_agent_local_explore_specialist(
-                {
-                    "title": title,
-                    "repo": "(local source)",
-                    "framework": str(state.framework or "").strip().lower(),
-                    "gap_description": gap,
-                    "gap_keywords": keywords,
-                },
-                reason="no_new_candidates",
-            )
-            if dispatched:
-                state.save(self.session_dir)
-                return
-        self._record_framework_agent_phase_done(
-            reason="no_candidates_and_discovery_exhausted",
-            failure_count=int(state.framework_agent_discover_failures or 0),
-        )
-        state.framework_agent_phase_done = True
-        state.save(self.session_dir)
+        await run_framework_agent_track(self)
 
     async def _framework_agent_authoring_inflight(self) -> bool:
         """True while a FRAMEWORK-authored patch for an unprocessed candidate is still in flight."""
@@ -2138,13 +2090,18 @@ class FrameworkPhase(ProposalBench):
         )
 
     async def _ask_brain(
-        self, key: str, request: Mapping[str, Any], queries: Mapping[str, QueryAnswer] | None = None
+        self,
+        key: str,
+        request: Mapping[str, Any],
+        queries: Mapping[str, QueryAnswer] | None = None,
+        *,
+        call_site: CallSite = CallSite.SETTLEMENT,
     ) -> BrainTurn:
-        """Ask the brain the settlement follow-up ``request`` names under snapshot key ``key``."""
+        """Ask the brain the follow-up or phase step ``request`` names under snapshot key ``key``."""
         state = self.shared_state
-        port = DecisionPort(f"a {key} settlement", queries)
+        port = DecisionPort(f"a {key} {call_site.value.replace('_', ' ')}", queries)
         tick, phase = int(state.tick or 0), state.phase or ""
-        return await ask_brain(CallSite.SETTLEMENT, {key: request}, port=port, tick=tick, phase=phase)
+        return await ask_brain(call_site, {key: request}, port=port, tick=tick, phase=phase)
 
     async def maybe_reauthor_from_critic_feedback(
         self,
@@ -2562,14 +2519,15 @@ class FrameworkPhase(ProposalBench):
         )
 
     async def _maybe_enqueue_candidate_discovery(self, *, reason: str) -> bool:
-        """Dispatch the candidate-discovery specialist when the pool is empty."""
+        """Dispatch the candidate-discovery specialist when the pool is empty and the brain asks for one; True while
+        one is out."""
         state = self.shared_state
-        limit = int(DISCOVER_FAILURE_RETRY_LIMIT)
         empties = int(state.framework_agent_empty_discoveries or 0)
         failures = int(state.framework_agent_discover_failures or 0)
-        if empties >= limit or failures >= limit:
+        decision = await discovery_decision(self, empties=empties, failures=failures)
+        if decision is None:
             return False
-        if await self._candidate_discovery_inflight():
+        if decision == "discovery.wait":
             return True
         gap, keywords = self._compose_framework_local_explore_gap()
         framework = str(state.framework or "").strip().lower()
@@ -2730,24 +2688,9 @@ class FrameworkPhase(ProposalBench):
         return out
 
     async def _maybe_bench_untested_proposals(self) -> None:
-        """Enqueue explore grids from ``untested_proposal_rows``: the custom specialist's alone, ahead of every gate;
-        the rest once no explore is queued or running and the framework candidate track is open."""
-        state = self.shared_state
-        if (state.phase or "").strip().upper() != _phase_state.PHASE_FRAMEWORK_AGENT:
-            return
-        dispatcher = self._coord.dispatcher
-        if dispatcher.admission_frozen or dispatcher.dispatch_paused_for_phase_budget():
-            return
-        explores = [t for t in (*await self.tasks.queued(), *await self.tasks.running()) if t.kind == "explore"]
-        custom = self._custom_proposal_rows()
-        if custom and not self._has_operator_work(explores):
-            if await self._enqueue_bench_grid(custom, operator_priority=True):
-                return
-        if state.custom_specialist_only or state.framework_agent_phase_done or explores:
-            return
-        rows = [r for r in state.untested_proposal_rows() if r["domain"] != CUSTOM_PROPOSAL_DOMAIN]
-        if rows:
-            await self._enqueue_bench_grid(rows[: self._AUTO_EXPLORE_GRID_CAP], operator_priority=False)
+        """Enqueue explore grids from ``untested_proposal_rows`` as the brain decides: the custom specialist's alone,
+        ahead of every gate; the rest once no explore is queued or running and the framework candidate track is open."""
+        await run_auto_bench(self)
 
     async def _enqueue_bench_grid(self, rows: list[dict[str, Any]], *, operator_priority: bool) -> bool:
         """Enqueue one explore grid benching ``rows``; returns whether a new task was created."""

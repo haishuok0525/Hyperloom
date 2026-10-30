@@ -13,11 +13,21 @@ from typing import Any, Mapping
 from hyperloom.brain.critic import CRITIC_ROLE, PATCH_APPROVAL_VERDICTS, SETTLEMENT_KEY, review_turn, settle_verdict
 from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
 from hyperloom.brain.pump import (
+    AUTO_BENCH_KEY,
+    CANDIDATE_DISCOVERY_KEY,
+    FRAMEWORK_AGENT_KEY,
     FRAMEWORK_PUMP_KEY,
+    PREDICTOR_ASK_KEY,
+    PREDICTOR_ENTRY_KEY,
     RESEARCH_SCOUT_KEY,
     STATIC_RECON_KEY,
     TRAJECTORY_REVIEW_KEY,
+    auto_bench,
+    candidate_discovery,
+    framework_agent_pump,
     framework_pump,
+    predictor_ask,
+    predictor_entry,
     research_scout,
     static_recon,
     trajectory_review,
@@ -33,6 +43,16 @@ from hyperloom.brain.settle import (
 )
 from hyperloom.brain.specialist import brief_turn
 from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
+
+_PORTED_PUMP_STRATEGIES = (
+    (FRAMEWORK_PUMP_KEY, framework_pump),
+    (FRAMEWORK_AGENT_KEY, framework_agent_pump),
+    (CANDIDATE_DISCOVERY_KEY, candidate_discovery),
+    (AUTO_BENCH_KEY, auto_bench),
+    (PREDICTOR_ASK_KEY, predictor_ask),
+    (STATIC_RECON_KEY, static_recon),
+    (TRAJECTORY_REVIEW_KEY, trajectory_review),
+)
 
 
 class BrainV0:
@@ -68,16 +88,16 @@ class BrainV0:
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """The FRAMEWORK pump's steps, or whether an internal specialist is dispatched."""
+        """The FRAMEWORK pump's steps, its candidate track, bench and predictor, or whether an internal specialist is
+        dispatched."""
         data = batch.snapshot.data
-        if FRAMEWORK_PUMP_KEY in data:
-            return await framework_pump(batch, port)
+        for key, strategy in _PORTED_PUMP_STRATEGIES:
+            if key in data:
+                return await strategy(batch, port)
         if RESEARCH_SCOUT_KEY in data:
             return research_scout(batch)
-        if STATIC_RECON_KEY in data:
-            return await static_recon(batch, port)
-        if TRAJECTORY_REVIEW_KEY in data:
-            return await trajectory_review(batch, port)
+        if PREDICTOR_ENTRY_KEY in data:
+            return predictor_entry(batch)
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_brief(self, batch: TickBatch, port: Port) -> BrainTurn:
