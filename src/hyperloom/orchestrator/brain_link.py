@@ -45,13 +45,18 @@ QueryAnswer = Callable[[Mapping[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class DecisionPort:
-    """What a brain call that only decides is lent: no model, and no tool beyond the queries it answers."""
+    """What a brain call that only decides is lent: optional models, and no tool beyond the queries it answers."""
 
-    llm: dict[str, Any] = {}
-
-    def __init__(self, what: str, queries: Mapping[str, QueryAnswer] | None = None) -> None:
+    def __init__(
+        self,
+        what: str,
+        queries: Mapping[str, QueryAnswer] | None = None,
+        *,
+        llm: Mapping[str, Any] | None = None,
+    ) -> None:
         self._what = what
         self._queries = dict(queries or {})
+        self.llm = dict(llm or {})
 
     async def call(self, call: ToolCall) -> dict[str, Any]:
         answer = self._queries.get(call.name)

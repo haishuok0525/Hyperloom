@@ -38,7 +38,7 @@ def test_only_orchestration_drives_and_only_the_critic_judges() -> None:
     assert {"request", "delegate", "propose_action"} <= set(roles["orchestration"])
 
 
-@pytest.mark.parametrize("site", [CallSite.LLM_TURN, CallSite.SETTLEMENT, CallSite.PHASE_PUMP])
+@pytest.mark.parametrize("site", [CallSite.LLM_TURN, CallSite.SETTLEMENT, CallSite.PHASE_PUMP, CallSite.SCORE])
 async def test_without_a_critic_model_every_call_site_returns_no_calls_and_hands_the_state_back(site) -> None:
     brain = create_brain({})
     batch = TickBatch(

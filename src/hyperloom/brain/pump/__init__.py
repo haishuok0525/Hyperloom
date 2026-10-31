@@ -20,6 +20,8 @@ from hyperloom.brain.pump.dispatch import (
     specialist_wave,
     stalled_domain,
 )
+from hyperloom.brain.pump.dispatch_order import DISPATCH_ORDER_KEY, dispatch_order
+from hyperloom.brain.pump.explore_coverage import EXPLORE_COVERAGE_KEY, explore_coverage
 from hyperloom.brain.pump.framework import FRAMEWORK_PUMP_KEY, framework_pump
 from hyperloom.brain.pump.internal import (
     RESEARCH_SCOUT_KEY,
@@ -40,6 +42,8 @@ __all__ = [
     "CONC_SWEEP_KEY",
     "CUSTOM_SPECIALIST_KEY",
     "CYCLE_REPROFILE_KEY",
+    "DISPATCH_ORDER_KEY",
+    "EXPLORE_COVERAGE_KEY",
     "FRAMEWORK_AGENT_KEY",
     "FRAMEWORK_PUMP_KEY",
     "KERNEL_AGENT_KEY",
@@ -58,6 +62,8 @@ __all__ = [
     "conc_sweep",
     "custom_specialist",
     "cycle_reprofile",
+    "dispatch_order",
+    "explore_coverage",
     "framework_agent_pump",
     "framework_pump",
     "kernel_agent",

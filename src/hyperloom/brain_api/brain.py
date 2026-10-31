@@ -14,7 +14,7 @@ from hyperloom.brain_api.tools import INTENT_TOOLS, ToolCall
 from hyperloom.brain_api.wire import json_value
 
 #: ``major.minor``. A brain built for another major is refused; a newer minor only adds.
-CONTRACT_VERSION = "1.6"
+CONTRACT_VERSION = "1.7"
 
 
 class BrainContractError(RuntimeError):
@@ -85,8 +85,8 @@ class Port(Protocol):
 
 @runtime_checkable
 class Brain(Protocol):
-    """Decides what the body does next. Called at three points of every tick, in :class:`CallSite` order, and to brief
-    each specialist the body runs."""
+    """Decides what the body does next. Called at the Coordinator tick sites in :class:`CallSite` order, to brief
+    each specialist, and to score a proposal set."""
 
     name: str
     contract_version: str
@@ -115,6 +115,10 @@ class Brain(Protocol):
         """The brief of the specialist about to run, returned as the one ``specialist.run`` call it runs on."""
         ...
 
+    async def on_score(self, batch: TickBatch, port: Port) -> BrainTurn:
+        """Advisory multi-model scoring of a specialist proposal set; ``port.llm`` holds one handle per model slug."""
+        ...
+
 
 #: Call site -> the brain method the body calls there.
 CALL_SITE_METHODS: Mapping[CallSite, str] = {
@@ -122,6 +126,7 @@ CALL_SITE_METHODS: Mapping[CallSite, str] = {
     CallSite.SETTLEMENT: "on_settlement",
     CallSite.PHASE_PUMP: "on_phase_pump",
     CallSite.BRIEF: "on_brief",
+    CallSite.SCORE: "on_score",
 }
 
 

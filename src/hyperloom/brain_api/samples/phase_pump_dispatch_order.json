@@ -1,0 +1,44 @@
+{
+  "observation": {
+    "call_site": "phase_pump",
+    "tick": 1,
+    "now_unix": 0.0,
+    "events": [],
+    "snapshot": {
+      "phase": "FRAMEWORK_AGENT",
+      "data": {
+        "dispatch_order": {
+          "phase": "FRAMEWORK_AGENT",
+          "tasks": [
+            {
+              "id": "1",
+              "kind": "explore",
+              "operator_work": false
+            },
+            {
+              "id": "2",
+              "kind": "integrate_patch",
+              "operator_work": false
+            }
+          ]
+        }
+      }
+    },
+    "brain_state": "cw=="
+  },
+  "answer": {
+    "tool_calls": [
+      {
+        "name": "dispatch.order",
+        "args": {
+          "ids": [
+            "2",
+            "1"
+          ]
+        },
+        "idempotency_key": null
+      }
+    ],
+    "brain_state": "cw=="
+  }
+}

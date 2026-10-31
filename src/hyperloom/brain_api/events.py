@@ -34,7 +34,7 @@ VERDICTS: frozenset[str] = frozenset({"KEEP", "REVERT", "NEEDS_REVIEW"})
 
 
 class CallSite(str, Enum):
-    """Where the body calls the brain: three points of one Coordinator tick, in the order it does, then the brief."""
+    """Where the body calls the brain: three points of one Coordinator tick, then the brief and advisory score."""
 
     #: The orchestration and critic model turns.
     LLM_TURN = "llm_turn"
@@ -44,6 +44,8 @@ class CallSite(str, Enum):
     PHASE_PUMP = "phase_pump"
     #: Outside the tick order: a specialist job is about to run and needs its brief.
     BRIEF = "brief"
+    #: Outside the tick order: advisory multi-model scoring of a specialist proposal set.
+    SCORE = "score"
 
 
 @dataclass(frozen=True)

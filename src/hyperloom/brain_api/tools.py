@@ -170,6 +170,11 @@ def _phase_strategy_tools() -> tuple[ToolSpec, ...]:
         ToolSpec("sweep.ask_directive", ToolKind.JOB, _STRATEGY_ONLY),
         ToolSpec("sweep.skip_conc", ToolKind.CONTROL, _STRATEGY_ONLY),
         ToolSpec("sweep.enqueue_conc", ToolKind.JOB, _STRATEGY_ONLY),
+        # Dispatch order of queued tasks, ``{"ids"}``; refuse a covered explore grid,
+        # ``{"message", "hint"}``; record advisory proposal scores, ``{"scale", "models", "errors"}``.
+        ToolSpec("dispatch.order", ToolKind.CONTROL, _STRATEGY_ONLY),
+        ToolSpec("explore.refuse_covered", ToolKind.CONTROL, _STRATEGY_ONLY),
+        ToolSpec("score.record", ToolKind.CONTROL, _STRATEGY_ONLY),
     )
 
 

@@ -18,7 +18,6 @@ import pytest
 from hyperloom.orchestrator.scoring.proposal_scorer import (
     DEFAULT_SCORER_MODELS,
     ProposalScorer,
-    _prepare_scoring_proposals,
 )
 from hyperloom.orchestrator.policy.gate import SPECIALIST_FROM_AGENT_PREFIX
 from hyperloom.inference_optimizer.tests.test_specialist_lifecycle import _StubSharedState
@@ -586,8 +585,7 @@ def _scripted_scorer(chunks: list[Any], *, stall: bool = False, call_timeout_s: 
 async def test_stream_flag_is_passed():
     chunks = [_content_chunk(_scores_json(("proposal_0", 5, "ok"))), _usage_chunk(_FakeUsage(10, 20))]
     scorer, client = _scripted_scorer(chunks)
-    entries = _prepare_scoring_proposals([{"name": "p"}])
-    await scorer._score_one_model("m", "prompt", entries)
+    await scorer.score(gap={"domain": "d"}, proposals=[{"name": "p"}])
     call = client.chat.completions.calls[0]
     assert call["stream"] is True
     assert call["stream_options"] == {"include_usage": True}
@@ -605,19 +603,17 @@ async def test_multiple_content_chunks_are_accumulated():
         _usage_chunk(_FakeUsage(11, 22)),
     ]
     scorer, _ = _scripted_scorer(chunks)
-    entries = _prepare_scoring_proposals([{"name": "p"}])
-    out = await scorer._score_one_model("m", "prompt", entries)
-    assert out["p"]["score"] == 7.0
+    out = await scorer.score(gap={"domain": "d"}, proposals=[{"name": "p"}])
+    assert out["models"]["m"]["p"]["score"] == 7.0
 
 
 @pytest.mark.asyncio
 async def test_stalled_stream_body_times_out():
-    # Stream stalls after one chunk: the deadline must cover the consumption loop.
+    # Stream stalls after one chunk: the deadline must cover the consumption loop; the brain records it.
     chunks = [_content_chunk('{"scores": {')]
     scorer, _ = _scripted_scorer(chunks, stall=True, call_timeout_s=0.05)
-    entries = _prepare_scoring_proposals([{"name": "p"}])
-    with pytest.raises(RuntimeError, match="timed out"):
-        await scorer._score_one_model("m", "prompt", entries)
+    out = await scorer.score(gap={"domain": "d"}, proposals=[{"name": "p"}])
+    assert "timed out" in out["errors"]["m"]
 
 
 @pytest.mark.asyncio
@@ -625,6 +621,5 @@ async def test_missing_usage_chunk_degrades_cleanly():
     # No usage-bearing chunk: scoring still succeeds.
     chunks = [_content_chunk(_scores_json(("proposal_0", 4, "fine")))]
     scorer, _ = _scripted_scorer(chunks)
-    entries = _prepare_scoring_proposals([{"name": "p"}])
-    out = await scorer._score_one_model("m", "prompt", entries)
-    assert out["p"]["score"] == 4.0
+    out = await scorer.score(gap={"domain": "d"}, proposals=[{"name": "p"}])
+    assert out["models"]["m"]["p"]["score"] == 4.0

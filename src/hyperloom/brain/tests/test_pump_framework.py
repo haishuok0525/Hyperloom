@@ -164,7 +164,12 @@ async def test_the_operator_rows_are_benched_first_and_the_rest_four_at_a_time(r
 
 
 def _ask(**overrides) -> dict:
-    return {"enabled": True, "framework": "sglang", "asked": False, **overrides}
+    base = {"enabled": True, "framework": "sglang", "framework_supported": True, "asked": False}
+    base.update(overrides)
+    if "framework" in overrides and "framework_supported" not in overrides:
+        # Tests that pass an unsupported framework name also mark it unsupported unless they say otherwise.
+        base["framework_supported"] = str(overrides["framework"] or "").strip().lower() in {"sglang", "vllm"}
+    return base
 
 
 @pytest.mark.parametrize(
