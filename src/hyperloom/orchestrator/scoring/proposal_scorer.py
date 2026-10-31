@@ -1,20 +1,18 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""ProposalScorer — purely advisory multi-model scorer for specialist proposals."""
+"""ProposalScorer — body organ that lends models and traces while the brain scores proposals."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, NamedTuple
 
-from hyperloom.common.coerce import to_float
-from hyperloom.common.jsonio import extract_last_json_with_key
+from hyperloom.brain_api import CallSite, LlmReply
 from hyperloom.common.llm_config import (
     DEFAULT_CLAUDE_MODEL,
     LLMConfigError,
@@ -22,15 +20,17 @@ from hyperloom.common.llm_config import (
     astream_chat_completion_text,
     get_async_openai_client,
 )
-from ..roles.base import parse_call_timeout_env
-from hyperloom.common.timeutil import format_exc_brief
 from hyperloom.common.token_usage import openai_usage_counts
 from hyperloom.inference_optimizer.trace.conversation_trace import ConversationRecord, append_conversation
 from hyperloom.inference_optimizer.trace.llm_trace import LLMCallRecord, LLMCallSite, append_llm_call, new_call_id
 from hyperloom.inference_optimizer.trace.parse_usage import reasoning_output_tokens
+from hyperloom.orchestrator.brain_link import DecisionPort, ask_brain, one_decision
+from hyperloom.orchestrator.roles.base import parse_call_timeout_env
 
 log = logging.getLogger(__name__)
 
+#: Snapshot key the brain reads a scoring ask under (must match ``brain.score.PROPOSAL_SCORE_KEY``).
+_PROPOSAL_SCORE_KEY = "proposal_score"
 
 DEFAULT_SCORER_MODELS: tuple[str, ...] = (
     DEFAULT_CLAUDE_MODEL,
@@ -39,104 +39,6 @@ DEFAULT_SCORER_MODELS: tuple[str, ...] = (
     "dvue-aoai-005-Kimi-K2.6",
     "gemini/gemini-3.1-pro-preview",
 )
-
-# Soft cap on proposals fed to each model.
-_MAX_PROPOSALS_SCORED: int = 16
-_MAX_FIELD_CHARS: int = 600
-
-
-_SCORING_INSTRUCTIONS = """
-You are scoring candidate serving-config variants proposed by a perf
-specialist for an LLM-inference optimization run on AMD GPUs.
-
-For EACH proposal below, output a single composite score from 0 to 10:
-how likely / how much this variant improves serving THROUGHPUT for the
-stated gap, grounded ONLY in the evidence shown. 10 = very likely a
-large win; 0 = irrelevant or likely harmful. Be calibrated, not generous.
-
-Output ONLY one compact JSON object, no prose, no markdown fence needed:
-
-{"scores": {"<proposal_id>": {"score": <0-10 number>, "reason": "<= 15 words"}}}
-
-Rules:
-- One entry per proposal, keyed by its exact "id" (not the human-readable name).
-- "reason" MUST be <= 15 words. Keep it terse to keep the reply short.
-- Do not add keys other than "score" and "reason".
-""".strip()
-
-
-@dataclass(frozen=True)
-class _ScoringProposal:
-    """One proposal prepared for multi-model scoring."""
-
-    stable_id: str
-    output_name: str
-    label_name: str
-    proposal: dict[str, Any]
-
-
-def _prepare_scoring_proposals(proposals: list[dict[str, Any]]) -> list[_ScoringProposal]:
-    """Assign stable ids and reject duplicate display names."""
-    seen_labels: set[str] = set()
-    out: list[_ScoringProposal] = []
-    for i, proposal in enumerate(proposals):
-        raw_name = proposal.get("name")
-        if raw_name is not None and str(raw_name).strip():
-            output_name = str(raw_name)
-            label_name = output_name.strip()
-        else:
-            output_name = f"proposal_{i}"
-            label_name = output_name
-        if label_name in seen_labels:
-            raise ValueError(f"duplicate proposal name: {label_name!r}")
-        seen_labels.add(label_name)
-        out.append(
-            _ScoringProposal(
-                stable_id=f"proposal_{i}",
-                output_name=output_name,
-                label_name=label_name,
-                proposal=proposal,
-            )
-        )
-    return out
-
-
-def _clip(value: Any, *, limit: int = _MAX_FIELD_CHARS) -> str:
-    """Stringify a value and truncate it to a maximum length."""
-    s = "" if value is None else str(value)
-    return s if len(s) <= limit else (s[:limit] + "…")
-
-
-def _coerce_score(raw: Any) -> float | None:
-    """Coerce a model-emitted score into a clamped [0, 10] float."""
-    val = to_float(raw)
-    return None if val is None else max(0.0, min(10.0, val))
-
-
-def _normalise_model_scores(
-    parsed: dict[str, Any],
-    *,
-    scoring_entries: list[_ScoringProposal],
-) -> dict[str, dict[str, Any]]:
-    """Project parsed ``{\"scores\": {...}}`` onto known stable ids."""
-    out: dict[str, dict[str, Any]] = {}
-    scores = parsed.get("scores")
-    if not isinstance(scores, dict):
-        return out
-    id_to_name = {entry.stable_id: entry.output_name for entry in scoring_entries}
-    known = set(id_to_name)
-    for proposal_id, entry in scores.items():
-        key = str(proposal_id)
-        if key not in known or not isinstance(entry, dict):
-            continue
-        score = _coerce_score(entry.get("score"))
-        if score is None:
-            continue
-        out[id_to_name[key]] = {
-            "score": score,
-            "reason": _clip(entry.get("reason"), limit=160),
-        }
-    return out
 
 
 class ScorerCallKeys(NamedTuple):
@@ -147,9 +49,58 @@ class ScorerCallKeys(NamedTuple):
     phase: str | None = None
 
 
+class _ScorerModel:
+    """One gateway model lent to the brain for a scoring call; the body owns credentials and traces."""
+
+    def __init__(self, scorer: "ProposalScorer", model: str, keys: ScorerCallKeys) -> None:
+        self.role = model
+        self._scorer = scorer
+        self._model = model
+        self._keys = keys
+
+    async def run(self, prompt: str, **kwargs: Any) -> LlmReply:
+        """Stream one scoring completion; failures raise so the brain records them per model."""
+        client = self._scorer._ensure_client()
+        messages = [{"role": "user", "content": prompt}]
+        _t0 = time.perf_counter()
+        create_params = apply_reasoning_effort(
+            {
+                "model": self._model,
+                "messages": messages,
+                "max_completion_tokens": int(kwargs.get("max_tokens") or self._scorer.max_completion_tokens),
+            }
+        )
+        try:
+            text, usage = await asyncio.wait_for(
+                astream_chat_completion_text(
+                    client,
+                    component="proposal_scorer",
+                    operation="score_proposal",
+                    **create_params,
+                ),
+                timeout=self._scorer.call_timeout_s,
+            )
+        except asyncio.TimeoutError as exc:
+            error = RuntimeError(f"timed out after {self._scorer.call_timeout_s:.0f}s")
+            self._scorer._trace_scorer_llm_failure(
+                self._model, error, self._keys, latency_ms=int((time.perf_counter() - _t0) * 1000)
+            )
+            raise error from exc
+        except Exception as exc:
+            self._scorer._trace_scorer_llm_failure(
+                self._model, exc, self._keys, latency_ms=int((time.perf_counter() - _t0) * 1000)
+            )
+            raise
+        latency_ms = int((time.perf_counter() - _t0) * 1000)
+        call_id = new_call_id()
+        self._scorer._trace_scorer_llm_call(self._model, usage, self._keys, latency_ms=latency_ms, call_id=call_id)
+        self._scorer._record_scorer_conversation(self._model, prompt, text, self._keys, call_id=call_id)
+        return LlmReply(raw_text=text)
+
+
 @dataclass
 class ProposalScorer:
-    """Score proposals without ranking or selecting them."""
+    """Score proposals without ranking or selecting them; the brain decides, this organ calls models."""
 
     models: tuple[str, ...] = DEFAULT_SCORER_MODELS
     # Large cap so reasoning raters can finish reasoning and still emit the scores JSON.
@@ -189,93 +140,6 @@ class ProposalScorer:
         except LLMConfigError as exc:
             raise RuntimeError(str(exc).replace("OpenAI-compatible client", "ProposalScorer")) from exc
         return self._client
-
-    def _build_prompt(
-        self,
-        *,
-        gap: dict[str, Any],
-        scoring_entries: list[_ScoringProposal],
-    ) -> str:
-        """Build ONE group-scoring prompt covering every proposal."""
-        lines: list[str] = ["=== Gap ==="]
-        lines.append(f"domain: {_clip(gap.get('domain'), limit=80)}")
-        lines.append(f"gap_canonical_id: {_clip(gap.get('gap_canonical_id'), limit=160)}")
-        symptom = gap.get("gap_symptom") or gap.get("summary")
-        if symptom:
-            lines.append(f"symptom: {_clip(symptom)}")
-        evidence = gap.get("gap_evidence")
-        if evidence:
-            lines.append(f"evidence: {_clip(json.dumps(evidence, sort_keys=True))}")
-
-        lines.append("")
-        lines.append("=== Proposals to score ===")
-        for entry in scoring_entries:
-            p = entry.proposal
-            lines.append(f"- id: {entry.stable_id}")
-            lines.append(f"  name: {entry.label_name}")
-            if p.get("extra_args"):
-                lines.append(f"  extra_args: {_clip(p.get('extra_args'))}")
-            if p.get("extra_envs"):
-                lines.append(f"  extra_envs: {_clip(json.dumps(p.get('extra_envs'), sort_keys=True))}")
-            if p.get("reason"):
-                lines.append(f"  reason: {_clip(p.get('reason'))}")
-            if p.get("kb_evidence"):
-                lines.append(f"  kb_evidence: {_clip(json.dumps(p.get('kb_evidence'), sort_keys=True))}")
-        return "\n".join(lines)
-
-    async def _score_one_model(
-        self,
-        model: str,
-        prompt: str,
-        scoring_entries: list[_ScoringProposal],
-        keys: ScorerCallKeys = ScorerCallKeys(),
-    ) -> dict[str, dict[str, Any]]:
-        """Score every proposal with a single model (raises on failure; caller records the per-model error)."""
-        client = self._ensure_client()
-        full_prompt = f"{prompt}\n\n{_SCORING_INSTRUCTIONS}"
-        messages = [{"role": "user", "content": full_prompt}]
-        _t0 = time.perf_counter()
-
-        # The proxy only accepts streamed requests; the shared helper accumulates the deltas and pulls usage from the
-        # final chunk.
-        create_params = apply_reasoning_effort(
-            {
-                "model": model,
-                "messages": messages,
-                "max_completion_tokens": self.max_completion_tokens,
-            }
-        )
-        try:
-            text, usage = await asyncio.wait_for(
-                astream_chat_completion_text(
-                    client,
-                    component="proposal_scorer",
-                    operation="score_proposal",
-                    **create_params,
-                ),
-                timeout=self.call_timeout_s,
-            )
-        except asyncio.TimeoutError as exc:
-            error = RuntimeError(f"timed out after {self.call_timeout_s:.0f}s")
-            self._trace_scorer_llm_failure(model, error, keys, latency_ms=int((time.perf_counter() - _t0) * 1000))
-            raise error from exc
-        except Exception as exc:
-            # Anything else out of the stream (transport, proxy 5xx, malformed chunk) is still a model call that
-            # produced nothing usable.
-            self._trace_scorer_llm_failure(model, exc, keys, latency_ms=int((time.perf_counter() - _t0) * 1000))
-            raise
-        latency_ms = int((time.perf_counter() - _t0) * 1000)
-        # One id for both halves of this call, so the emitter pairs them on the call itself instead of on a ts-second
-        # bucket shared with the other models being scored concurrently.
-        call_id = new_call_id()
-        # Record this model's token spend before parsing (best-effort).
-        self._trace_scorer_llm_call(model, usage, keys, latency_ms=latency_ms, call_id=call_id)
-        # Persist the full (redacted) prompt + reply alongside the token row.
-        self._record_scorer_conversation(model, full_prompt, text, keys, call_id=call_id)
-        parsed = extract_last_json_with_key(text, "scores")
-        if parsed is None:
-            raise RuntimeError(f"no parseable scores JSON (reply_chars={len(text)})")
-        return _normalise_model_scores(parsed, scoring_entries=scoring_entries)
 
     def _trace_scorer_llm_call(
         self,
@@ -383,47 +247,32 @@ class ProposalScorer:
         tick: int | None = None,
         phase: str | None = None,
     ) -> dict[str, Any]:
-        """Score ``proposals`` against ``gap`` with every configured model (per-model failures land in ``errors``, never raised)."""
-        proposals = [p for p in (proposals or []) if isinstance(p, dict)]
-        if not proposals or not self.models:
-            return {"scale": "0-10", "models": {}, "errors": {}}
-        if len(proposals) > _MAX_PROPOSALS_SCORED:
-            proposals = proposals[:_MAX_PROPOSALS_SCORED]
-        try:
-            scoring_entries = _prepare_scoring_proposals(proposals)
-        except ValueError as exc:
-            return {
-                "scale": "0-10",
-                "models": {},
-                "errors": {"input": format_exc_brief(exc, limit=200)},
-            }
-        prompt = self._build_prompt(gap=gap, scoring_entries=scoring_entries)
-
-        results = await asyncio.gather(
-            *(
-                self._score_one_model(
-                    m, prompt, scoring_entries, ScorerCallKeys(task_id=task_id, tick=tick, phase=phase)
-                )
-                for m in self.models
-            ),
-            return_exceptions=True,
+        """Ask the brain to score ``proposals`` against ``gap`` with every configured model."""
+        keys = ScorerCallKeys(task_id=task_id, tick=tick, phase=phase)
+        handles = {m: _ScorerModel(self, m, keys) for m in self.models}
+        port = DecisionPort("proposal scoring", llm=handles)
+        turn = await ask_brain(
+            CallSite.SCORE,
+            {
+                _PROPOSAL_SCORE_KEY: {
+                    "gap": gap,
+                    "proposals": list(proposals or []),
+                    "models": list(self.models),
+                    "max_completion_tokens": self.max_completion_tokens,
+                }
+            },
+            port=port,
+            tick=int(tick or 0),
+            phase=phase or "",
         )
-        models_out: dict[str, dict[str, Any]] = {}
-        errors: dict[str, str] = {}
-        for model, res in zip(self.models, results):
-            if isinstance(res, BaseException):
-                errors[model] = format_exc_brief(res, limit=200)
-                log.warning(
-                    "ProposalScorer: model=%s failed: %r",
-                    model,
-                    res,
-                )
-                continue
-            if res:
-                models_out[model] = res
-            else:
-                errors[model] = "no usable scores returned"
-        return {"scale": "0-10", "models": models_out, "errors": errors}
+        decision = one_decision(turn, ("score.record",), what="proposal scores")
+        if decision is None:
+            return {"scale": "0-10", "models": {}, "errors": {}}
+        return {
+            "scale": str(decision.args.get("scale") or "0-10"),
+            "models": dict(decision.args.get("models") or {}),
+            "errors": dict(decision.args.get("errors") or {}),
+        }
 
 
 __all__ = ["ProposalScorer", "DEFAULT_SCORER_MODELS"]

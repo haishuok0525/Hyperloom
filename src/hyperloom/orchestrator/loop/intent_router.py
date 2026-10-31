@@ -860,25 +860,18 @@ class IntentRouter(CoordinatorCollaborator):
         A task already queued or running under ``idempotency_key`` is not counted against the grid: re-sending the key
         is answered as a duplicate by the enqueue below, not as coverage.
         """
-        if action_name != "explore":
-            return False
-        from ..actions.executors.explore import framework_lever_grid
-        from ..actions.executors.measured_variants import explore_grid_already_covered
+        from .explore_coverage_brain import refuse_if_explore_covered
 
-        if framework_lever_grid(self.shared_state):
-            # The executor adds its pending rewrite levers to this grid, so the grid is not all there is to measure.
+        denied = await refuse_if_explore_covered(
+            action_name=action_name,
+            params=params,
+            idempotency_key=idempotency_key,
+            tasks=self.tasks,
+            shared_state=self.shared_state,
+        )
+        if denied is None:
             return False
-
-        retry_prefix = f"{idempotency_key}-retry"
-        active = [
-            task
-            for task in (*await self.tasks.queued(), *await self.tasks.running())
-            if task.idempotency_key != idempotency_key and not task.idempotency_key.startswith(retry_prefix)
-        ]
-        covered = explore_grid_already_covered(params, active, self.shared_state.explore_search)
-        if covered is None:
-            return False
-        await self.record_policy_denied(source, intent, covered, action_name="explore")
+        await self.record_policy_denied(source, intent, denied, action_name="explore")
         return True
 
     async def handle_delegate(self, source: str, intent: Intent) -> None:

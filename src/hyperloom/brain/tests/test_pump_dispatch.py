@@ -10,6 +10,8 @@ from hyperloom.brain.pump import (
     CONC_SWEEP_KEY,
     CUSTOM_SPECIALIST_KEY,
     CYCLE_REPROFILE_KEY,
+    DISPATCH_ORDER_KEY,
+    EXPLORE_COVERAGE_KEY,
     KERNEL_AGENT_KEY,
     KERNEL_ENTER_KEY,
     MACRO_FOCUS_KEY,
@@ -178,3 +180,29 @@ async def test_sweep_directive_and_conc_sweep() -> None:
     assert await _pump(
         CONC_SWEEP_KEY, {"enabled": True, "watermark": {}, "validated_gain": 1.0, "budget_denied": None}
     ) == [("sweep.enqueue_conc", {"reason": "phase_entry"})]
+
+
+async def test_dispatch_order_puts_operator_and_phase_first_kinds_ahead() -> None:
+    calls = await _pump(
+        DISPATCH_ORDER_KEY,
+        {
+            "phase": "FRAMEWORK_AGENT",
+            "tasks": [
+                {"id": "a", "kind": "explore", "operator_work": False},
+                {"id": "b", "kind": "integrate_patch", "operator_work": False},
+                {"id": "c", "kind": "specialist", "operator_work": True},
+            ],
+        },
+    )
+    assert calls == [("dispatch.order", {"ids": ["c", "b", "a"]})]
+
+
+async def test_explore_coverage_refuses_only_a_covered_explore_without_lever_grid() -> None:
+    assert await _pump(
+        EXPLORE_COVERAGE_KEY,
+        {"is_explore": True, "lever_grid": False, "covered": True, "message": "done", "hint": "h"},
+    ) == [("explore.refuse_covered", {"message": "done", "hint": "h"})]
+    assert await _pump(
+        EXPLORE_COVERAGE_KEY,
+        {"is_explore": True, "lever_grid": True, "covered": True, "message": "done", "hint": "h"},
+    ) == []

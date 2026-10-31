@@ -1,0 +1,17 @@
+{
+  "observation": {
+    "call_site": "llm_turn",
+    "tick": 1,
+    "now_unix": 0.0,
+    "events": [],
+    "snapshot": {
+      "phase": "FRAMEWORK_AGENT",
+      "data": {}
+    },
+    "brain_state": "cw=="
+  },
+  "answer": {
+    "tool_calls": [],
+    "brain_state": "cw=="
+  }
+}

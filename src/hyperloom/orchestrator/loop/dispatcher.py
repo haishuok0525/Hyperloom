@@ -118,7 +118,6 @@ _COOPERATIVE_CANCEL_GRACE_SEC: float = (
 # rather than anything about how long the work takes.
 _CANCEL_NOTICE_SEC: float = STOP_GATE_POLL_SECONDS
 
-
 #: Kinds whose execution manages its own completion: the pump does not book
 #: their result. Admission is unchanged — same budget, lane and lease gates.
 _SELF_SETTLING_KINDS: frozenset[str] = frozenset({"targeted_build", "kernel_agent"})
@@ -666,7 +665,7 @@ class DispatcherCollaborator(CoordinatorCollaborator):
         Tasks already in ``_inflight_actions`` are skipped so a task is never
         dispatched twice across pump calls.
         """
-        queued = dispatch_order.in_dispatch_order(await self.tasks.queued(), self.shared_state.phase)
+        queued = await dispatch_order.in_dispatch_order_async(await self.tasks.queued(), self.shared_state.phase)
         if not queued:
             return
         holders = await self.locks.lane_holders()
