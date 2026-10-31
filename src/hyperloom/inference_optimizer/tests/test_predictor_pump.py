@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from hyperloom.brain.pump import predictor as brain_predictor
 from hyperloom.orchestrator.predictor import pump as pump_mod
 from hyperloom.orchestrator.predictor.client import Action, Prediction
 from hyperloom.orchestrator.predictor.prompt import queue_block
@@ -387,7 +388,7 @@ async def test_a_decision_point_waits_for_the_reprofile_in_flight(service, monke
     stuck = _state(auto_roofline_pending_task_id="roofline-2")
     pump = _pump()
     await pump.step(stuck)
-    monkeypatch.setattr(pump_mod, "MAX_PROFILE_WAIT_SEC", 0.0)
+    monkeypatch.setattr(brain_predictor, "MAX_PROFILE_WAIT_SEC", 0.0)
     await _ask_and_file(pump, stuck)
     assert stuck.predictor_asked_keys == ["c0-s0-r0"]
 
@@ -557,7 +558,7 @@ async def test_a_slow_answer_does_not_hold_framework_entry_past_its_bound(servic
     state = _state()
     service.answer = _answer(Action(server_args={"--kv-cache-dtype": "fp8"}), votes={0: 1})
     service.gate = threading.Event()
-    monkeypatch.setattr(pump_mod, "MAX_ENTRY_WAIT_SEC", 0.05)
+    monkeypatch.setattr(brain_predictor, "MAX_ENTRY_WAIT_SEC", 0.05)
     phase = _entering_phase(monkeypatch, state)
     await phase.on_enter_framework(SimpleNamespace(from_phase="ENABLEMENT"))
     assert _predictor_rounds(state) == []

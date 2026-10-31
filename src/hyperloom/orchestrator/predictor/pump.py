@@ -23,11 +23,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
+from hyperloom.brain_api import BrainTurn, CallSite
 from hyperloom.common.timeutil import now_iso
 from hyperloom.common import predictor_config
+from hyperloom.orchestrator.brain_link import DecisionPort, ask_brain, one_decision
 from hyperloom.orchestrator.predictor.client import Prediction, predict
 from hyperloom.orchestrator.predictor.mandate import patch_mandate
 from hyperloom.orchestrator.predictor.payload import PhaseBudget, build_request
@@ -39,15 +41,10 @@ from hyperloom.orchestrator.predictor.view import SessionView
 
 log = logging.getLogger(__name__)
 
-#: One explore variant on a large model, server restart plus benchmark. An
-#: answer is worth asking for only while the phase can still bench one variant.
-MIN_VARIANT_SEC = 600.0
-
-#: Longest a decision point is held for a re-profile in flight; past it the predictor answers on the profile there is.
-MAX_PROFILE_WAIT_SEC = 900.0
-
-#: Longest FRAMEWORK entry waits for the answer before orchestration's first turn.
-MAX_ENTRY_WAIT_SEC = 300.0
+# Snapshot keys the brain decides the asks and the entry wait under.
+PREDICTOR_ASK_KEY = "predictor_ask"
+PREDICTOR_ENTRY_KEY = "predictor_entry"
+_ASK_DECISIONS = ("predictor.ask", "predictor.skip")
 
 
 def decision_point_key(state: SessionView) -> str:
@@ -55,15 +52,9 @@ def decision_point_key(state: SessionView) -> str:
     return f"c{int(state.macro_cycle or 0)}-s{len(state.optimization_stack)}-r{len(state.roofline_snapshots)}"
 
 
-def _skip_reason(state: SessionView, conf: predictor_config.PredictorConfig) -> str | None:
-    """Why not to ask at this step, before the phase clock is read; ``None`` to go on."""
-    if not conf.enabled:
-        return "disabled"
-    if str(state.framework or "").strip().lower() not in predictor_config.SUPPORTED_FRAMEWORKS:
-        return f"no flag catalogue for framework {state.framework!r}"
-    if decision_point_key(state) in state.predictor_asked_keys:
-        return "decision point already asked"
-    return None
+async def _ask_brain(state: SessionView, key: str, request: Mapping[str, Any], port: DecisionPort) -> BrainTurn:
+    tick, phase = int(getattr(state, "tick", 0) or 0), str(getattr(state, "phase", "") or "")
+    return await ask_brain(CallSite.PHASE_PUMP, {key: request}, port=port, tick=tick, phase=phase)
 
 
 class PredictorPump:
@@ -89,23 +80,18 @@ class PredictorPump:
         self._asked_at = ""
         self._held_since: dict[str, float] = {}
 
-    def _held_for_profile(self, state: SessionView, key: str) -> bool:
-        """Whether to hold ``key`` for the re-profile in flight, for at most :data:`MAX_PROFILE_WAIT_SEC`.
-
-        A KEEP moves the decision point at once, and the re-profile it triggers
-        moves it again minutes later; an answer in between reads the profile of
-        the stack before the KEEP.
-        """
+    def _profile_hold(self, state: SessionView, key: str) -> dict[str, Any]:
+        """The re-profile ``key`` waits for, if one is in flight, and how long it has been held for it."""
         pending = str(state.auto_roofline_pending_task_id or "").strip()
         if not pending:
-            return False
+            return {"pending": False, "held_sec": 0.0}
         if key not in self._held_since:
             self._held_since[key] = time.monotonic()
             log.info("predictor: holding decision point %s for re-profile task %s", key, pending)
-        return time.monotonic() - self._held_since[key] < MAX_PROFILE_WAIT_SEC
+        return {"pending": True, "held_sec": time.monotonic() - self._held_since[key]}
 
     async def settle(self, state: SessionView) -> None:
-        """Ask when this decision point warrants it, then wait up to :data:`MAX_ENTRY_WAIT_SEC` to file the answer.
+        """Ask when this decision point warrants it, then wait as long as the brain holds entry to file the answer.
 
         FRAMEWORK entry calls this before orchestration's first turn. The tick
         files an answer only after that turn, by which time the first grid is
@@ -114,18 +100,22 @@ class PredictorPump:
         request still running at the deadline is left for a later step to file.
         """
         await self.step(state)
-        if self._inflight is None or not self._conf.enqueues or self._key != decision_point_key(state):
+        request = {
+            "inflight": self._inflight is not None,
+            "enqueues": bool(self._conf.enqueues),
+            "current": self._key == decision_point_key(state),
+        }
+        turn = await _ask_brain(state, PREDICTOR_ENTRY_KEY, request, DecisionPort("the predictor's entry wait"))
+        decision = one_decision(turn, ("predictor.wait",), what="the predictor's entry wait")
+        if decision is None or self._inflight is None:
             return
-        log.info("predictor: holding orchestration's first turn up to %.0fs for %s", MAX_ENTRY_WAIT_SEC, self._key)
-        await asyncio.wait({self._inflight}, timeout=MAX_ENTRY_WAIT_SEC)
+        timeout = float(decision.args["timeout_sec"])
+        log.info("predictor: holding orchestration's first turn up to %.0fs for %s", timeout, self._key)
+        await asyncio.wait({self._inflight}, timeout=timeout)
         if self._inflight.done():
             await self.step(state)
         else:
-            log.info(
-                "predictor: no answer at %s within %.0fs; orchestration starts without it",
-                self._key,
-                MAX_ENTRY_WAIT_SEC,
-            )
+            log.info("predictor: no answer at %s within %.0fs; orchestration starts without it", self._key, timeout)
 
     async def step(self, state: SessionView) -> None:
         """File an answer that has arrived, then ask when the current decision point warrants it."""
@@ -138,17 +128,31 @@ class PredictorPump:
 
     async def _ask(self, state: SessionView) -> None:
         conf = predictor_config.load()
-        reason = _skip_reason(state, conf)
-        if reason is not None:
-            log.debug("predictor: not asking (%s)", reason)
-            return
-        budget = self._budget(state)
-        if budget.headroom_sec is not None and budget.headroom_sec < MIN_VARIANT_SEC:
-            log.debug("predictor: not asking (phase headroom %.0fs is below one variant)", budget.headroom_sec)
-            return
         key = decision_point_key(state)
-        if self._held_for_profile(state, key):
+        budgets: list[PhaseBudget] = []
+
+        async def _headroom(_args: Mapping[str, Any]) -> dict[str, Any]:
+            budgets.append(self._budget(state))
+            return {"headroom_sec": budgets[-1].headroom_sec}
+
+        async def _hold(_args: Mapping[str, Any]) -> dict[str, Any]:
+            return self._profile_hold(state, key)
+
+        request = {
+            "enabled": bool(conf.enabled),
+            "framework": state.framework,
+            "asked": key in state.predictor_asked_keys,
+        }
+        port = DecisionPort("the predictor ask", {"query.phase_headroom": _headroom, "query.profile_hold": _hold})
+        decision = one_decision(
+            await _ask_brain(state, PREDICTOR_ASK_KEY, request, port), _ASK_DECISIONS, what="the predictor ask"
+        )
+        if decision is None:
             return
+        if decision.name == "predictor.skip":
+            log.debug("predictor: not asking (%s)", decision.args["reason"])
+            return
+        budget = budgets[-1] if budgets else self._budget(state)
         self._key, self._conf, self._started, self._asked_at = key, conf, time.monotonic(), now_iso()
         self._cycle = int(state.macro_cycle or 0)
         # Before anything can raise: a request that fails is not retried at the same decision point.
