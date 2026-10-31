@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from hyperloom.brain_api import BrainTurn, Port, TickBatch, ToolCall
-from hyperloom.common import predictor_config
 
 # Snapshot keys the body asks under.
 PREDICTOR_ASK_KEY = "predictor_ask"
@@ -35,7 +34,7 @@ def _skip_reason(request: Mapping[str, Any]) -> str | None:
     """Why not to ask, before the phase clock is read; ``None`` to go on."""
     if not request["enabled"]:
         return "disabled"
-    if str(request["framework"] or "").strip().lower() not in predictor_config.SUPPORTED_FRAMEWORKS:
+    if not request["framework_supported"]:
         return f"no flag catalogue for framework {request['framework']!r}"
     if request["asked"]:
         return "decision point already asked"

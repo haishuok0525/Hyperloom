@@ -45,6 +45,9 @@ class Brain:
     async def on_brief(self, batch, llm):
         return BrainTurn()
 
+    async def on_score(self, batch, llm):
+        return BrainTurn()
+
 def create_brain(config):
     return Brain(config)
 """

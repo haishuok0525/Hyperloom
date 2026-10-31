@@ -1,0 +1,33 @@
+{
+  "observation": {
+    "call_site": "score",
+    "tick": 1,
+    "now_unix": 0.0,
+    "events": [],
+    "snapshot": {
+      "phase": "FRAMEWORK_AGENT",
+      "data": {
+        "proposal_score": {
+          "gap": {},
+          "proposals": [],
+          "models": []
+        }
+      }
+    },
+    "brain_state": "cw=="
+  },
+  "answer": {
+    "tool_calls": [
+      {
+        "name": "score.record",
+        "args": {
+          "scale": "0-10",
+          "models": {},
+          "errors": {}
+        },
+        "idempotency_key": null
+      }
+    ],
+    "brain_state": "cw=="
+  }
+}

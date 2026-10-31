@@ -10,14 +10,15 @@ import sys
 
 import pytest
 
-from hyperloom.orchestrator.scoring.proposal_scorer import (
-    ProposalScorer,
-    _ScoringProposal,
-    _clip,
-    _coerce_score,
-    _normalise_model_scores,
-    _prepare_scoring_proposals,
+from hyperloom.brain.score import (
+    ScoringProposal as _ScoringProposal,
+    clip as _clip,
+    coerce_score as _coerce_score,
+    normalise_model_scores as _normalise_model_scores,
+    prepare_scoring_proposals as _prepare_scoring_proposals,
 )
+from hyperloom.brain.score import build_scoring_prompt
+from hyperloom.orchestrator.scoring.proposal_scorer import ProposalScorer
 
 
 # ---- _coerce_score / _clip ----
@@ -263,7 +264,7 @@ async def test_build_prompt_includes_evidence():
             {"name": "p", "extra_args": "--x", "extra_envs": {"E": "1"}, "reason": "r", "kb_evidence": ["k"]},
         ]
     )
-    prompt = scorer._build_prompt(gap=gap, scoring_entries=entries)
+    prompt = build_scoring_prompt(gap=gap, scoring_entries=entries)
     assert "evidence:" in prompt
     assert "extra_envs:" in prompt
     assert "kb_evidence:" in prompt

@@ -141,6 +141,8 @@ class PredictorPump:
         request = {
             "enabled": bool(conf.enabled),
             "framework": state.framework,
+            "framework_supported": str(state.framework or "").strip().lower()
+            in predictor_config.SUPPORTED_FRAMEWORKS,
             "asked": key in state.predictor_asked_keys,
         }
         port = DecisionPort("the predictor ask", {"query.phase_headroom": _headroom, "query.profile_hold": _hold})

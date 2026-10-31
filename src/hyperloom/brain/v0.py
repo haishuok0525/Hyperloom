@@ -18,6 +18,8 @@ from hyperloom.brain.pump import (
     CONC_SWEEP_KEY,
     CUSTOM_SPECIALIST_KEY,
     CYCLE_REPROFILE_KEY,
+    DISPATCH_ORDER_KEY,
+    EXPLORE_COVERAGE_KEY,
     FRAMEWORK_AGENT_KEY,
     FRAMEWORK_PUMP_KEY,
     KERNEL_AGENT_KEY,
@@ -36,6 +38,8 @@ from hyperloom.brain.pump import (
     conc_sweep,
     custom_specialist,
     cycle_reprofile,
+    dispatch_order,
+    explore_coverage,
     framework_agent_pump,
     framework_pump,
     kernel_agent,
@@ -51,6 +55,7 @@ from hyperloom.brain.pump import (
     trajectory_review,
 )
 from hyperloom.brain.roles import ROLE_INTENTS
+from hyperloom.brain.score import PROPOSAL_SCORE_KEY, score_proposals
 from hyperloom.brain.settle import (
     CONFIG_DELIVERY_KEY,
     PATCH_DELIVERY_KEY,
@@ -61,6 +66,9 @@ from hyperloom.brain.settle import (
 )
 from hyperloom.brain.specialist import brief_turn
 from hyperloom.brain_api import CONTRACT_VERSION, BrainTurn, Port, TickBatch
+
+#: Body commit on fork main that Brain v0 was released against (P4e tip; P5 body wiring ships with this release).
+BODY_BASELINE_COMMIT = "0a93533882f3d8bffa52c092a2a7c1976975f22f"
 
 _PORTED_PUMP_STRATEGIES = (
     (FRAMEWORK_PUMP_KEY, framework_pump),
@@ -79,6 +87,8 @@ _PORTED_PUMP_STRATEGIES = (
     (KERNEL_AGENT_KEY, kernel_agent),
     (SWEEP_DIRECTIVE_KEY, sweep_directive),
     (CONC_SWEEP_KEY, conc_sweep),
+    (DISPATCH_ORDER_KEY, dispatch_order),
+    (EXPLORE_COVERAGE_KEY, explore_coverage),
 )
 
 
@@ -89,6 +99,7 @@ class BrainV0:
     contract_version = CONTRACT_VERSION
     role_intents = ROLE_INTENTS
     patch_approval_verdicts = PATCH_APPROVAL_VERDICTS
+    body_baseline_commit = BODY_BASELINE_COMMIT
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = dict(config)
@@ -129,3 +140,9 @@ class BrainV0:
     async def on_brief(self, batch: TickBatch, port: Port) -> BrainTurn:
         """The specialist brief."""
         return brief_turn(batch)
+
+    async def on_score(self, batch: TickBatch, port: Port) -> BrainTurn:
+        """Advisory multi-model scoring of a specialist proposal set."""
+        if PROPOSAL_SCORE_KEY in batch.snapshot.data:
+            return await score_proposals(batch, port)
+        return BrainTurn(brain_state=batch.brain_state)

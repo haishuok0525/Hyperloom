@@ -255,6 +255,19 @@ ignore_imports =
     hyperloom.**.tests.** -> **
 unmatched_ignore_imports_alerting = none
 
+# Env/config readers stay in the body; the brain gets those facts in the snapshot.
+# (Broader common I/O modules are still reachable transitively via pure helpers such as perf_metric.)
+[importlinter:contract:brain-no-common-io]
+name = hyperloom.brain does not import env/config-reading hyperloom.common modules
+type = forbidden
+source_modules = hyperloom.brain
+forbidden_modules =
+    hyperloom.common.llm_config
+    hyperloom.common.predictor_config
+ignore_imports =
+    hyperloom.**.tests.** -> **
+unmatched_ignore_imports_alerting = error
+
 
 [importlinter:contract:body-blind-to-brain]
 name = the body never imports hyperloom.brain (it loads one by name through brain_api.loader)
