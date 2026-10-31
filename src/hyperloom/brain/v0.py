@@ -15,21 +15,39 @@ from hyperloom.brain.orchestrate import ORCHESTRATION_ROLE, orchestration_turn
 from hyperloom.brain.pump import (
     AUTO_BENCH_KEY,
     CANDIDATE_DISCOVERY_KEY,
+    CONC_SWEEP_KEY,
+    CUSTOM_SPECIALIST_KEY,
+    CYCLE_REPROFILE_KEY,
     FRAMEWORK_AGENT_KEY,
     FRAMEWORK_PUMP_KEY,
+    KERNEL_AGENT_KEY,
+    KERNEL_ENTER_KEY,
+    MACRO_FOCUS_KEY,
     PREDICTOR_ASK_KEY,
     PREDICTOR_ENTRY_KEY,
     RESEARCH_SCOUT_KEY,
+    STALLED_DOMAIN_KEY,
     STATIC_RECON_KEY,
+    SWEEP_DIRECTIVE_KEY,
     TRAJECTORY_REVIEW_KEY,
+    WAVE_SPLIT_KEY,
     auto_bench,
     candidate_discovery,
+    conc_sweep,
+    custom_specialist,
+    cycle_reprofile,
     framework_agent_pump,
     framework_pump,
+    kernel_agent,
+    kernel_enter,
+    macro_focus,
     predictor_ask,
     predictor_entry,
     research_scout,
+    specialist_wave,
+    stalled_domain,
     static_recon,
+    sweep_directive,
     trajectory_review,
 )
 from hyperloom.brain.roles import ROLE_INTENTS
@@ -52,6 +70,15 @@ _PORTED_PUMP_STRATEGIES = (
     (PREDICTOR_ASK_KEY, predictor_ask),
     (STATIC_RECON_KEY, static_recon),
     (TRAJECTORY_REVIEW_KEY, trajectory_review),
+    (STALLED_DOMAIN_KEY, stalled_domain),
+    (CUSTOM_SPECIALIST_KEY, custom_specialist),
+    (WAVE_SPLIT_KEY, specialist_wave),
+    (MACRO_FOCUS_KEY, macro_focus),
+    (CYCLE_REPROFILE_KEY, cycle_reprofile),
+    (KERNEL_ENTER_KEY, kernel_enter),
+    (KERNEL_AGENT_KEY, kernel_agent),
+    (SWEEP_DIRECTIVE_KEY, sweep_directive),
+    (CONC_SWEEP_KEY, conc_sweep),
 )
 
 
@@ -88,8 +115,7 @@ class BrainV0:
         return BrainTurn(brain_state=batch.brain_state)
 
     async def on_phase_pump(self, batch: TickBatch, port: Port) -> BrainTurn:
-        """The FRAMEWORK pump's steps, its candidate track, bench and predictor, or whether an internal specialist is
-        dispatched."""
+        """Phase strategy: FRAMEWORK pieces, dispatch, macro-cycle, KERNEL, SWEEP, or an internal specialist."""
         data = batch.snapshot.data
         for key, strategy in _PORTED_PUMP_STRATEGIES:
             if key in data:

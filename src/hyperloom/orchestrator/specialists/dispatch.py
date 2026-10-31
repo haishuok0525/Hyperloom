@@ -13,17 +13,14 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, NamedTuple
 
 from hyperloom.common.env import env_flag
-from hyperloom.inference_optimizer.protocol.intent import Intent, IntentType
+from hyperloom.inference_optimizer.protocol.intent import Intent
 
 from ..collaborator import CoordinatorCollaborator
 from ..measurement.runtime_findings import render_runtime_findings
 from ..state.shared_state import KbInjection
 from ..state.task_registry import TaskSpec
 from ..phases import machine_state as _phase_state
-from ..policy.gate import (
-    PolicyDenied,
-    validate_freeform_wave_task,
-)
+from ..policy.gate import PolicyDenied, validate_freeform_wave_task
 from hyperloom.inference_optimizer.trace.trajectory_trace import EVENT_TASK_RETRY, record_event, trajectory_scope
 from .runner import SpecialistFailureType, specialist_patch_preflight_error
 
@@ -86,14 +83,6 @@ _ROUND_CARRIED_KEYS: tuple[str, ...] = (
 
 # Bounded transient-failure auto-retry for specialist dispatches (infra-only).
 SPECIALIST_AUTO_RETRY_MAX: int = 2
-
-# Hard-trigger thresholds: optimisation rounds a domain may go without a specialist dispatch / a KEEP before the
-# Coordinator force-dispatches one.
-FORCE_STALLED_SPECIALIST_ROUNDS: int = 8
-FORCE_STALLED_KEEP_ROUNDS: int = 12
-
-# Gap id for the custom dispatch when the ledger has no gap yet.
-CUSTOM_SESSION_GAP_ID: str = "gap.custom.session"
 
 
 class ClassifiedFailure(NamedTuple):
@@ -570,43 +559,29 @@ class SpecialistDispatchCollaborator(CoordinatorCollaborator):
         intent: Intent,
         params: dict[str, Any],
     ) -> None:
-        """Fan a specialist delegate carrying ``params.tasks=[...]`` into N
-        standard free-form specialist dispatches (scope=freeform, mode=research
-        defaults). Each fanned task is re-dispatched through the
-        normal ``handle_delegate`` path. Per-task idempotency keys derive from
-        the wave key. Each entry must pass the same structural checks as
-        :func:`validate_freeform_wave_task` (the PolicyGate runs these first).
+        """Fan a specialist delegate carrying ``params.tasks=[...]`` into N standard free-form specialist dispatches."""
+        from .dispatch_brain import wave_split_decision
 
-        Args:
-            source: The agent issuing the wave delegate.
-            intent: The originating specialist DELEGATE intent.
-            params: The delegate params carrying the ``tasks`` list to fan out.
-        """
-        tasks = params.get("tasks") or []
-        shared = {k: v for k, v in params.items() if k != "tasks"}
-        base_key = str(intent.payload.get("idempotency_key") or "").strip()
+        split = await wave_split_decision(self, intent, params)
+        if split is None:
+            return
         pending: list[Intent] = []
-        for idx, task in enumerate(tasks):
-            desc = validate_freeform_wave_task(task, index=idx)
-            sub_params = dict(shared)
+        for entry in split["tasks"]:
+            raw = entry["raw"]
+            idx = int(entry["index"])
+            desc = validate_freeform_wave_task(raw, index=idx)
+            sub_params = dict(split["shared"])
             sub_params["scope"] = "freeform"
             sub_params["task_description"] = desc
-            summary = str(task.get("task_summary") or "").strip()
-            if summary:
-                sub_params["task_summary"] = summary
-            for carry in (
-                "mode",
-                "bench",
-                "model",
-                "priority",
-                "timeout_minutes",
-                "max_turns",
-            ):
-                if isinstance(task, dict) and carry in task:
-                    sub_params[carry] = task[carry]
+            if entry.get("task_summary"):
+                sub_params["task_summary"] = entry["task_summary"]
+            for carry in ("mode", "bench", "model", "priority", "timeout_minutes", "max_turns"):
+                if carry in entry:
+                    sub_params[carry] = entry[carry]
             sub_params.setdefault("mode", "research")
             sub_payload = dict(intent.payload)
             sub_payload["params"] = sub_params
+            base_key = str(split["base_key"] or "").strip()
             if base_key:
                 sub_payload["idempotency_key"] = f"{base_key}-w{idx}"
             else:
@@ -622,138 +597,16 @@ class SpecialistDispatchCollaborator(CoordinatorCollaborator):
             await self._coord.router.handle_delegate(source, sub_intent)
 
     async def maybe_force_stalled_domain_specialist(self) -> None:
-        """Force-dispatch a domain specialist for a domain untouched for too many
-        specialist rounds that still has an open gap in the gaps[] ledger.
+        """Force-dispatch a domain specialist for a domain untouched for too many specialist rounds."""
+        from .dispatch_brain import run_stalled_domain
 
-        A real scheduling event (a domain delegate routed through PolicyGate +
-        warmup + the GPU specialist pool). Idempotent per
-        ``(anchor, round, macro_cycle)``; a domain with a specialist already
-        queued or running is skipped. The dispatcher zeroes the anchor's
-        dispatch counter when the forced specialist spawns; its keep counter
-        clears only on a KEEP from that domain's specialist. At most one forced
-        dispatch per tick.
-
-        Note:
-            Side-effecting: may dispatch a domain specialist via
-            ``handle_intent``. Returns nothing.
-        """
-        state = self.shared_state
-        if str(getattr(state, "phase", "") or "").upper() != _phase_state.PHASE_FRAMEWORK_AGENT:
-            return
-        stalled = state.stalled_domains(
-            specialist_threshold=FORCE_STALLED_SPECIALIST_ROUNDS,
-            keep_threshold=FORCE_STALLED_KEEP_ROUNDS,
-        )
-        if not stalled:
-            return
-
-        from .domains import domain_for_tag
-        from .in_flight import in_flight_domains
-
-        busy_domains = in_flight_domains([*await self.tasks.queued(), *await self.tasks.running()])
-        round_id = int((state.explore_search or {}).get("cursor") or 0)
-        for anchor in stalled:
-            gap_cid = state.best_gap_for_anchor(anchor)
-            if not gap_cid:
-                continue
-            dom = domain_for_tag(anchor)
-            if dom is None or dom.key in busy_domains:
-                continue
-            params: dict[str, Any] = {
-                "domain": dom.key,
-                "tags": [anchor],
-                "gap_canonical_id": gap_cid,
-                "scope": "domain",
-                "source": "coordinator_internal",
-                "reason": f"stalled_domain_force:{anchor}",
-            }
-            idempotency_key = f"forced-stalled-{anchor}-round{round_id}{self._coord.dispatcher.cycle_idem_suffix()}"
-            if await self.tasks.find_by_idempotency_key(idempotency_key) is not None:
-                continue
-            await self.warm_specialist_params(params)
-            if self.refuse_patch_without_source(params, task_id=idempotency_key):
-                continue
-            intent = Intent(
-                type=IntentType.DELEGATE,
-                payload={
-                    "action_name": "specialist",
-                    "params": params,
-                    "idempotency_key": idempotency_key,
-                },
-            )
-            await self._coord.router.handle_intent("orchestration", intent)
-            try:
-                state.save(self.session_dir)
-            except OSError:
-                log.exception("stalled-domain force: state save failed")
-            log.info(
-                "stalled-domain force: dispatched domain=%s anchor=%s gap=%s round=%d",
-                dom.key,
-                anchor,
-                gap_cid,
-                round_id,
-            )
-            # One forced dispatch per tick.
-            return
-        return
+        await run_stalled_domain(self)
 
     async def ensure_custom_specialist(self) -> None:
-        """Dispatch the operator-defined specialist once per macro cycle in FRAMEWORK_AGENT.
+        """Dispatch the operator-defined specialist once per macro cycle in FRAMEWORK_AGENT."""
+        from .dispatch_brain import run_custom_specialist
 
-        Coordinator-owned: it bypasses the policy gate, which denies every custom delegate from Orchestration.
-        """
-        state = self.shared_state
-        prompt = str(state.custom_specialist_prompt or "").strip()
-        if not prompt or str(getattr(state, "phase", "") or "").upper() != _phase_state.PHASE_FRAMEWORK_AGENT:
-            return
-        from .domains import CUSTOM_SPECIALIST_KEY, custom_specialist_key
-        from .profile import MODE_RESEARCH, NO_LEASE_EXTENSION
-
-        key = custom_specialist_key(int(state.macro_cycle or 0), prompt)
-        if key == self.refused_custom_key or await self.tasks.find_by_idempotency_key(key) is not None:
-            return
-        from ..state._shared_state.phase_state import gap_actionability_key
-
-        params: dict[str, Any] = {
-            "domain": CUSTOM_SPECIALIST_KEY,
-            "scope": "domain",
-            "source": "coordinator_internal",
-            "reason": "custom_specialist",
-        }
-        if state.custom_specialist_only:
-            params[NO_LEASE_EXTENSION] = True
-        gaps = [g for g in state.gaps if isinstance(g, dict) and str(g.get("canonical_id") or "").strip()]
-        if gaps:
-            params["gap_canonical_id"] = str(min(gaps, key=gap_actionability_key)["canonical_id"]).strip()
-        else:
-            params["gap_canonical_id"] = CUSTOM_SESSION_GAP_ID
-            params["gap_symptom"] = "No profiled gap; follow the operator-defined focus."
-            params["gap_layer"] = "operator-defined"
-        await self.warm_specialist_params(params)
-
-        research_reason = specialist_patch_preflight_error(params, framework_repo_path=state.framework_repo_path)
-        if research_reason:
-            params["mode"] = MODE_RESEARCH
-            await self.bus.record_observation(
-                "coordinator",
-                "observation",
-                {"kind": "custom_specialist_research_only", "reason": research_reason},
-            )
-        intent = Intent(
-            type=IntentType.DELEGATE,
-            payload={"action_name": "specialist", "params": params, "idempotency_key": key},
-        )
-        await self._coord.router.handle_delegate("orchestration", intent)
-        if await self.tasks.find_by_idempotency_key(key) is None:
-            self.refused_custom_key = key
-            log.warning("custom specialist: dispatch %s refused (see the policy denial); not retried this cycle", key)
-            return
-        log.info(
-            "custom specialist: requested key=%s gap=%s mode=%s",
-            key,
-            params["gap_canonical_id"],
-            params.get("mode") or "default",
-        )
+        await run_custom_specialist(self)
 
     def build_specialist_round_entry(
         self,

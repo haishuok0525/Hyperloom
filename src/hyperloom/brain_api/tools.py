@@ -153,6 +153,23 @@ def _phase_strategy_tools() -> tuple[ToolSpec, ...]:
         ToolSpec("predictor.ask", ToolKind.JOB, _STRATEGY_ONLY),
         ToolSpec("predictor.skip", ToolKind.CONTROL, _STRATEGY_ONLY),
         ToolSpec("predictor.wait", ToolKind.CONTROL, _STRATEGY_ONLY),
+        # Forced stalled-domain / custom specialist / wave split.
+        ToolSpec("query.task_idempotency", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.patch_preflight", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("query.custom_specialist_gap", ToolKind.QUERY, _STRATEGY_ONLY),
+        ToolSpec("specialist.force_stalled", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("specialist.ensure_custom", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("specialist.wave_split", ToolKind.JOB, _STRATEGY_ONLY),
+        # Macro-cycle focus and cycle-start reprofile.
+        ToolSpec("macro.set_focus", ToolKind.CONTROL, _STRATEGY_ONLY),
+        ToolSpec("prelude.reprofile", ToolKind.JOB, _STRATEGY_ONLY),
+        # KERNEL enter and agent route.
+        ToolSpec("kernel.enter", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("kernel.run", ToolKind.JOB, _STRATEGY_ONLY),
+        # SWEEP directive and conc_sweep.
+        ToolSpec("sweep.ask_directive", ToolKind.JOB, _STRATEGY_ONLY),
+        ToolSpec("sweep.skip_conc", ToolKind.CONTROL, _STRATEGY_ONLY),
+        ToolSpec("sweep.enqueue_conc", ToolKind.JOB, _STRATEGY_ONLY),
     )
 
 

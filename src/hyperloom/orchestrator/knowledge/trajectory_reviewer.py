@@ -67,7 +67,7 @@ def build_trajectory_digest(
     session_dir: str | Path,
     shared_state: Any,
 ) -> str:
-    """Render the advisory trajectory-review block; ``\"\"`` when nothing to report."""
+    """Render the advisory trajectory-review block; ``""`` when nothing to report."""
     entries = read_journal_entries(Path(session_dir))
     snaps = [s for s in (getattr(shared_state, "roofline_snapshots", None) or []) if isinstance(s, dict)]
     dead = _exhausted_clusters(entries)
