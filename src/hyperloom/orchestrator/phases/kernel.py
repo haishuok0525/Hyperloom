@@ -41,8 +41,6 @@ from hyperloom.inference_optimizer.breakdown.recorder import tool_versions
 from ..actions.executors._recipe_script import resolve_launch_server_script
 from ..actions.executors._workload_envs import GEAK_METRIC_OUTPUT, geak_metric_axis
 from hyperloom.inference_optimizer.breakdown.recorder.kernel_event import (
-    ROUTE_FORGE,
-    ROUTE_GEAK,
     kernel_event_id,
     record_geak_attempts,
     reject_geak_attempts,
@@ -67,7 +65,7 @@ from hyperloom.inference_optimizer.session.optimization_journal import (
 )
 from ..state.analysis_failures import analysis_skip_reason, remembered_trace_failure
 from ..state.shared_state import resolve_graded_comparison
-from ..state.task_registry import TERMINAL_STATES, Task, TaskNotFound, TaskSpec
+from ..state.task_registry import TERMINAL_STATES, Task, TaskNotFound
 from ..bus.message_bus import Message
 from ..kernel.geak_config import (
     _geak_accepted_kernel_specs,
@@ -912,40 +910,9 @@ class KernelPhase(CoordinatorCollaborator):
 
     async def on_enter_kernel(self, tr: "Transition") -> None:
         """Open the KERNEL timeline and enqueue the ``kernel_agent`` task that carries the phase's work."""
-        state = self.shared_state
-        if not self._coord.phase_machine.kernel_enabled():
-            log.info(
-                "KERNEL entry hook fired with kernel_enabled=False (from=%s)",
-                tr.from_phase or "<unknown>",
-            )
-            return
-        self._open_kernel_timeline(
-            route=ROUTE_GEAK if self.geak_enabled() else ROUTE_FORGE,
-            route_reason=f"kernel_optimizer={str(state.kernel_optimizer or '')}",
-            from_phase=tr.from_phase,
-        )
-        lanes, lease_ttl = self._coord.dispatcher.registry_lanes_ttl("kernel_agent")
-        # Leases do not expire on their TTL, so it only records how long the holder expects to keep the lanes.
-        remaining = _phase_state.phase_budget_remaining_seconds(state)
-        ttl = int(remaining) if remaining is not None and remaining > 0 else lease_ttl
-        # A resumed session re-enters the phase whose earlier task already settled, so only a live row is reused.
-        base_key = f"kernel_agent_c{int(state.macro_cycle or 0)}"
-        attempt = 0
-        while True:
-            task, was_existing = await self.tasks.create_or_return_existing(
-                TaskSpec(
-                    kind="kernel_agent",
-                    params={"from_phase": str(tr.from_phase or "")},
-                    idempotency_key=base_key if attempt == 0 else f"{base_key}-r{attempt}",
-                    requires_lanes=lanes,
-                    lease_ttl_sec=ttl,
-                    dispatch_class="coordinator",
-                )
-            )
-            if not (was_existing and task.state in TERMINAL_STATES):
-                break
-            attempt += 1
-        log.info("KERNEL entry: kernel_agent task=%s (%s)", task.task_id, task.state)
+        from .kernel_pump import run_kernel_enter
+
+        await run_kernel_enter(self, tr)
 
     @staticmethod
     def _skip_gemm_tuning() -> bool:
@@ -957,123 +924,16 @@ class KernelPhase(CoordinatorCollaborator):
         return env_bool("INFERENCE_OPTIMIZER_SKIP_GEMM_TUNING")
 
     def _gemm_tuning_required_before_kernel_opt(self) -> bool:
-        """Decide whether GEMM tuning must run before kernel_opt.
+        """Decide whether GEMM tuning must run before kernel_opt."""
+        from .kernel_pump import gemm_required_for_phase
 
-        Eligible on any supported framework (sglang / vllm / vllm-aiter), with no
-        precision or MoE pre-filter.
-
-        Returns:
-            bool: ``True`` when GEMM tuning should run before source-level
-                ``kernel_opt``.
-        """
-        if self._skip_gemm_tuning():
-            return False
-        ss = self.shared_state
-        framework = str(ss.framework or "").strip().lower()
-
-        # kernelforge gemm-tune handles any precision (bf16/fp16/fp8/fp4/mxfp4),
-        # dense or MoE, on sglang/vllm. Real e2e KEEPs span all of these —
-        # including bf16 *dense* (+11.1%) — so we must NOT pre-filter on
-        # precision/MoE here, or a category that can optimize gets silently
-        # blocked. Gate only on a supported framework and let forge itself
-        # return no_improvement when a shape can't be beaten.
-        eligible = framework in ("sglang", "vllm", "vllm-aiter")
-
-        if not eligible:
-            return False
-        last = ss.last_gemm_tuning or {}
-        status = str(last.get("status") or "").strip().lower()
-        # The fp8 -> bf16 dense retry runs inside a single gemm call (the
-        # tuner router selects the bf16 pass as a fallback), so a completed run's
-        # status is terminal -- there is no pending second attempt to re-trigger.
-        return status not in {
-            "ok",
-            "succeeded",
-            "success",
-            "complete",
-            "completed",
-            "skipped",
-            "failed",
-        }
+        return gemm_required_for_phase(self)
 
     async def run_agent(self, ctx: Any) -> dict[str, Any]:
-        """Run the KERNEL_AGENT phase's work under the ``kernel_agent`` task's lanes.
+        """Run the KERNEL_AGENT phase's work under the ``kernel_agent`` task's lanes."""
+        from .kernel_pump import run_kernel_agent
 
-        Args:
-            ctx: The runner context; ``ctx.task.params["from_phase"]`` names the
-                phase the KERNEL entry came from.
-
-        Returns:
-            A result payload naming the route that ran.
-        """
-        from_phase = str((ctx.task.params or {}).get("from_phase") or "")
-        if self.geak_enabled():
-            # GEAK owns the whole KERNEL_AGENT phase: one in-process e2e run seeded with the best config so far, then
-            # hand straight to SWEEP.
-            await self._run_geak_kernel_phase(from_phase=from_phase)
-            return {"status": "ok", "route": "geak"}
-        if not self._gemm_tuning_required_before_kernel_opt():
-            await self._finish_kernel_entry()
-            return {"status": "ok", "route": "forge_no_gemm"}
-
-        # Refresh the snapshot before GEMM tuning targets the bottleneck.
-        await self._maybe_reprofile_for_kernel()
-        log.info(
-            "KERNEL entry: running GEMM tuning before source-level kernel_opt",
-        )
-        self._coord.phase_machine.record_phase_entry_evidence(
-            gemm_tuning={"status": "running", "source": "kernel_entry_auto"},
-        )
-        run_gemm_tuning_handler = None
-        try:
-            from ..kernel.request_handlers import run_gemm_tuning_handler
-
-            # The fp8 -> bf16 dense retry now lives inside the tuner router: an fp8 run whose tuning comes back empty
-            # runs the bf16 dense pass in the same call (router selects it as a fallback).
-            result = await run_gemm_tuning_handler(
-                {
-                    "task_id": "kernel_entry_gemm_tuning",
-                    "reason": "kernel_entry_auto",
-                    "macro_cycle": int(self.shared_state.macro_cycle or 0),
-                },
-                session_dir=self.session_dir,
-            )
-        except Exception as exc:  # isolation boundary: the kernel-entry GEMM tuning stage, recorded as failed
-            log.exception("KERNEL entry GEMM tuning failed")
-            result = {
-                "status": "failed",
-                "decision": "REVERT",
-                "error_class": exc.__class__.__name__,
-                "error": repr(exc),
-            }
-        await self._handle_gemm_tuning_result(result)
-
-        status = str(result.get("status") or "unknown")
-        await self.bus.append_and_seq(
-            Message.new(
-                "kernel_agent",
-                "orchestration",
-                "response",
-                {
-                    "in_reply_to": "",
-                    "kind": "run_gemm_tuning_done",
-                    "status": status,
-                    "result": result,
-                    "source": "kernel_entry_auto",
-                },
-            )
-        )
-        self._coord.phase_machine.record_phase_entry_evidence(
-            gemm_tuning={
-                "status": "done" if status in {"ok", "complete", "succeeded"} else status,
-                "source": "kernel_entry_auto",
-                "best_speedup": result.get("best_speedup"),
-                "tuned_file": result.get("tuned_file"),
-            },
-        )
-        # Capture explore + GEMM-tuning gains before the entry batch.
-        await self._finish_kernel_entry()
-        return {"status": "ok", "route": "forge_gemm"}
+        return await run_kernel_agent(self, ctx)
 
     @staticmethod
     def _resolve_bench_protocol(envs: Mapping[str, Any]) -> dict[str, Any]:

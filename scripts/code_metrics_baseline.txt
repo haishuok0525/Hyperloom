@@ -369,14 +369,12 @@ function-lines src/hyperloom/orchestrator/phases/kernel.py::KernelPhase._merge_g
 function-lines src/hyperloom/orchestrator/phases/kernel.py::KernelPhase._settle_gemm_e2e_verdict 52
 function-lines src/hyperloom/orchestrator/phases/kernel.py::KernelPhase._validate_gemm_tuning_e2e 64
 function-lines src/hyperloom/orchestrator/phases/kernel.py::KernelPhase.record_geak_adopted_kernels 51
-function-lines src/hyperloom/orchestrator/phases/kernel.py::KernelPhase.run_agent 59
 function-lines src/hyperloom/orchestrator/phases/prelude.py::PreludePhase._apply_warm_kernel_patch 61
 function-lines src/hyperloom/orchestrator/phases/prelude.py::PreludePhase._enqueue_warm_replay 66
 function-lines src/hyperloom/orchestrator/phases/prelude.py::PreludePhase._grade_warm_replay 51
 function-lines src/hyperloom/orchestrator/phases/prelude.py::PreludePhase._judge_warm_replay_accuracy 68
 function-lines src/hyperloom/orchestrator/phases/prelude.py::PreludePhase._open_warm_replay_task 63
 function-lines src/hyperloom/orchestrator/phases/prelude.py::PreludePhase._push_warm_replay_onto_stack 53
-function-lines src/hyperloom/orchestrator/phases/sweep.py::SweepPhase._start_conc_sweep 72
 function-lines src/hyperloom/orchestrator/policy/gate.py::PolicyGate._validate_integrate_patch_critic_gate 54
 function-lines src/hyperloom/orchestrator/policy/gate.py::PolicyGate._validate_specialist_gpu_request 57
 function-lines src/hyperloom/orchestrator/policy/gate.py::PolicyGate._validate_warm_replay_targets 62
@@ -385,7 +383,6 @@ function-lines src/hyperloom/orchestrator/roles/claude.py::ClaudeBackend.run 62
 function-lines src/hyperloom/orchestrator/roles/critic_agent.py::CriticAgentBackend.run 87
 function-lines src/hyperloom/orchestrator/specialists/agent_cli_config.py::_codex_mcp_config 63
 function-lines src/hyperloom/orchestrator/specialists/dispatch.py::SpecialistDispatchCollaborator.maybe_auto_retry_specialist 101
-function-lines src/hyperloom/orchestrator/specialists/dispatch.py::SpecialistDispatchCollaborator.maybe_force_stalled_domain_specialist 56
 function-lines src/hyperloom/orchestrator/specialists/dispatch.py::SpecialistDispatchCollaborator.warm_specialist_params 51
 function-lines src/hyperloom/orchestrator/specialists/patch_safety.py::vet_patches 75
 function-lines src/hyperloom/orchestrator/specialists/rebench.py::run_specialist_rebench 72
@@ -620,7 +617,7 @@ module-lines src/hyperloom/orchestrator/loop/coordinator.py 1316
 module-lines src/hyperloom/orchestrator/loop/dispatcher.py 1426
 module-lines src/hyperloom/orchestrator/loop/intent_router.py 1304
 module-lines src/hyperloom/orchestrator/phases/framework.py 2952
-module-lines src/hyperloom/orchestrator/phases/kernel.py 3970
+module-lines src/hyperloom/orchestrator/phases/kernel.py 3830
 module-lines src/hyperloom/orchestrator/phases/machine_state.py 1914
 module-lines src/hyperloom/orchestrator/phases/prelude.py 2477
 module-lines src/hyperloom/orchestrator/policy/gate.py 1547
