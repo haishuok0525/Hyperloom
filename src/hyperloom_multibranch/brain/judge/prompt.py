@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: 2026 Advanced Micro Devices, Inc.
 # SPDX-License-Identifier: MIT
 
-"""The judge's system prompt: :data:`JUDGE_SYSTEM_PROMPT` in a session that plays no scheduling playbook, and
-:data:`PLAYBOOK_JUDGE_PROMPT` in one that plays one, where the stall evidence is the one stop rule for a stall.
+"""The judge's system prompt: :attr:`JudgePrompts.plain` in a session that plays no scheduling playbook, and
+:attr:`JudgePrompts.playbook` in one that plays one, where the stall evidence is the one stop rule for a stall.
 
-The two differ in five parts (:class:`PromptParts`). Each has a version in the session's manifest fingerprint, derived
-from its text and the reply format every user prompt ends with (:data:`REPLY_FORMAT`).
+The two differ in five parts (:class:`PromptParts`). Both state the body's numbers the scheduler enforces
+(:class:`~hyperloom_multibranch.contracts.brain.JudgeFacts`), which the brain is handed rather than imports. Each has a
+version in the session's manifest fingerprint, derived from its text and the reply format every user prompt ends with
+(:data:`REPLY_FORMAT`).
 """
 
 from __future__ import annotations
@@ -13,11 +15,10 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict, dataclass
 
-from hyperloom_multibranch.blackboard import STALL_TESTS
-from hyperloom_multibranch.blackboard.rsi.frontier import SETTLED_TESTS
-from hyperloom_multibranch.scheduling.branches import REPAIR_BRANCH_SECONDS, REPAIR_PROTECTED_SECONDS
-from hyperloom_multibranch.scheduling.events import MB_BIG_GAIN_BARS, MB_BOTTLENECK_SHIFT_PP
-from hyperloom_multibranch.specialist.prompts import VERSION_HEX
+from hyperloom_multibranch.contracts.brain import JudgeFacts
+
+#: Hex digits of a prompt version, as many as the specialist prompts' versions carry.
+VERSION_HEX = 12
 
 
 @dataclass(frozen=True)
@@ -39,16 +40,16 @@ _WITHOUT_PLAYBOOK = PromptParts(
     spend="""\
 Spend the budget where the expected gain is highest: a branch whose frontier expected_gain_pct is low and that is not
 observing a slow-paying direction is a candidate to stop or to lower K; keep K where the gain is high.""",
-    stall=f"""\
+    stall="""\
 A branch's judged_since_commit counts its tests judged since its last commit (since it opened, before any). When it
-reaches {STALL_TESTS}, its specialist is asked to read its brief again and reconsider its direction: a branch whose
+reaches {stall_tests}, its specialist is asked to read its brief again and reconsider its direction: a branch whose
 count runs well past that is stalling, a candidate to stop or to lower K unless its frontier still expects a gain.""",
-    behind=f"""\
+    behind="""\
 A branch's behind_integration_pct is how far its head's recorded value lies below the integration head's, in percent of
-the root's value. A branch far behind whose judged_since_commit has reached {STALL_TESTS} gains little even once
-merged, so it is a candidate to stop. A branch whose judged_since_commit is below {STALL_TESTS} is not stalling: lying
+the root's value. A branch far behind whose judged_since_commit has reached {stall_tests} gains little even once
+merged, so it is a candidate to stop. A branch whose judged_since_commit is below {stall_tests} is not stalling: lying
 behind is no reason to stop it, as the commits it goes on making are what the integrator merges.""",
-    grace=f"{SETTLED_TESTS} of its explore tests",
+    grace="{grace_tests} of its explore tests",
     envelope="",
 )
 #: The parts of a session that plays one: its stall evidence is the one stop rule for a stall.
@@ -57,9 +58,9 @@ _WITH_PLAYBOOK = PromptParts(
 Spend the budget where the expected gain is highest: lower the K of a branch whose frontier expected_gain_pct is low
 and that is not observing a slow-paying direction, and keep K where the gain is high. A low expected gain is no reason
 to stop a branch: its stall evidence is.""",
-    stall=f"""\
+    stall="""\
 A branch's judged_since_commit counts its tests judged since its last commit (since it opened, before any). When it
-reaches {STALL_TESTS}, its specialist is asked to read its brief again and reconsider its direction; that is no reason
+reaches {stall_tests}, its specialist is asked to read its brief again and reconsider its direction; that is no reason
 to stop it.
 A specialist branch's components also carry its stall evidence: stalled_tests, its tests judged since its last commit
 that did not fail to merge; stall_bar, the stall the stop rule stops at this round; merged_commits and merged_gain_pct,
@@ -83,7 +84,7 @@ may lower their K, not stop them.""",
 
 
 #: The judge's system prompt, the parts that differ by session (:class:`PromptParts`) left to fill.
-_TEMPLATE = f"""You are the scheduler's judge in a multi-branch LLM inference optimization session.
+_TEMPLATE = """You are the scheduler's judge in a multi-branch LLM inference optimization session.
 Specialist branches explore optimizations in parallel; the integration branch merges their kept commits.
 Each branch has K, the number of tests it may run at once. Within the hard caps you are given, decide:
 how many branches to open, each branch's K (the integration branch included), which specialist branches to stop and
@@ -99,29 +100,29 @@ free slot unopened needs a reason; opening into it does not. pending lists the f
 that wait for a slot, oldest first, with how long each has waited: a slot your stops free goes to them first and only
 the slots left open your branches. You do not admit them; stop a branch that is worth less than a pending one to let it
 start.
-{{spend}}
+{spend}
 A branch's basis says what its expected gain rests on: its own trend, the floor of a direction still being observed,
 the floor of a branch too new to have a trend, or the roofline headroom that capped it; trust a measured trend over a
 floor.
-{{stall}}
+{stall}
 A branch's similar_to lists the other running branches whose own change since the commit they last followed, their
 start commit or the integration commit they were re-rooted onto, is much the same as its own, with score the share of
 the two changes they have in common; a branch with no commit of its own since then is in no pair. identical is true
 when both heads hold the same recipe: two branches marked identical spend twice the budget on one result, so stop the one of the pair with the
 lower expected_gain_pct. A similar pair that is not identical is yours to weigh.
 events lists what happened since your last call that changes what the running branches are worth; you are asked at
-once when one happens. integration_moved: a merge moved the integration head by gain_pct, at least {MB_BIG_GAIN_BARS}
+once when one happens. integration_moved: a merge moved the integration head by gain_pct, at least {big_gain_bars}
 times the bar threshold_pct it was judged against, or merged a foundation fix (foundation_fix true), which merges
 whatever its gain because the other branches build on what it fixes. A branch you open now starts from the new
 integration head.
-{{behind}}
+{behind}
 stranded_leads lists, the largest lead first, each branch whose head leads the integration head by more than the bar
 on the metric while commits of its own failed to merge: skipped as a conflict, or tested and not stackable. Each line
 names those commits with their gain, why their last merge failed and how many merges they took part in. While a lead
 stays stranded the integration branch, and every branch you open from it, goes on from the lower value: weigh that
 before stopping such a branch, whose head holds the gain the integration head lacks.
 bottleneck_moved: the profile of the integration head taken after it moved found its largest op changed, or that op's
-share fell by more than {MB_BOTTLENECK_SHIFT_PP} percentage points: branches still speeding up the previous largest op
+share fell by more than {bottleneck_shift_pp} percentage points: branches still speeding up the previous largest op
 have less to gain, and a branch you open now is briefed on the new largest op unless you name its focus.
 The integration branch's profile_running is true while that profile runs: its PROFILE test holds one of the
 integration branch's K slots, so merge tests wait for it while that K is 1; size the integration branch's K with it.
@@ -168,15 +169,15 @@ losing its heartbeat without gaining.
 A branch of origin user follows a direction the user wrote; such branches open from that same commit ahead of the
 opening batch, and the opening batch fills the slots they leave.
 A branch's held says why a stop or a lower K you give it is not applied, and is absent from a branch you may stop and
-narrow freely. grace: a specialist branch until {{grace}} measured its candidate and were
-judged; a failed test, and one whose verdict is still to come, does not count. repair: a branch opened to fix a blocked candidate, for {REPAIR_PROTECTED_SECONDS / 60:g} minutes from its
+narrow freely. grace: a specialist branch until {grace} measured its candidate and were
+judged; a failed test, and one whose verdict is still to come, does not count. repair: a branch opened to fix a blocked candidate, for {repair_protected_minutes:g} minutes from its
 open, since the numerics fix it carries is worth what its blocked candidate measured and shows later than the first few
 tests of a new branch. pending_confirm: A branch with a pending candidate cannot be stopped or narrowed until its
 confirm is judged. A branch whose specialist gave up, and one stopped for a failed judging, is held by neither its grace
-nor its repair period; a repair branch runs at most {REPAIR_BRANCH_SECONDS / 3600:g} hours whatever you decide.
+nor its repair period; a repair branch runs at most {repair_branch_hours:g} hours whatever you decide.
 unsteered: a branch whose steered is false, which runs a third-party agent the user named, by the agent's own logic, one
 test at a time: no stop or K you give it is applied, unless its judging failed: stop it then, as any branch whose
-judging failed. Otherwise weigh the slot it holds as given.{{envelope}}
+judging failed. Otherwise weigh the slot it holds as given.{envelope}
 A branch's pending_candidates are its measured candidates that beat its head by at least the bar while their confirm
 runs, each with its gain_over_head_pct.
 A branch's queued_intents are its explore tests requested and not measured yet, queued or running, each with the
@@ -202,27 +203,47 @@ REPLY_FORMAT = """Reply with one JSON object of this shape:
  "stop_session": null or {"reason": "<why the session should stop now>"}}
 List only the branches whose K should change. Branches not named keep their K and keep running."""
 
-#: The system prompt of a session that plays no scheduling playbook.
-JUDGE_SYSTEM_PROMPT = _TEMPLATE.format(**asdict(_WITHOUT_PLAYBOOK))
-#: The system prompt of a session that plays one: its stall evidence is the one stop rule for a stall.
-PLAYBOOK_JUDGE_PROMPT = _TEMPLATE.format(**asdict(_WITH_PLAYBOOK))
+
+def _numbers(facts: JudgeFacts) -> dict[str, float]:
+    return {
+        "stall_tests": facts.stall_tests,
+        "grace_tests": facts.grace_tests,
+        "big_gain_bars": facts.big_gain_bars,
+        "bottleneck_shift_pp": facts.bottleneck_shift_pp,
+        "repair_protected_minutes": facts.repair_protected_seconds / 60,
+        "repair_branch_hours": facts.repair_branch_seconds / 3600,
+    }
 
 
-def _version(system: str) -> str:
+def _system(parts: PromptParts, facts: JudgeFacts) -> str:
+    numbers = _numbers(facts)
+    filled = {name: text.format(**numbers) for name, text in asdict(parts).items()}
+    return _TEMPLATE.format(**filled, **numbers)
+
+
+def prompt_version(system: str) -> str:
+    """The version of the judge prompt whose system prompt is ``system``: its text and :data:`REPLY_FORMAT` hashed."""
+
     return hashlib.sha256(f"{system}\n{REPLY_FORMAT}".encode()).hexdigest()[:VERSION_HEX]
 
 
-#: The judge prompt's version in the session's manifest fingerprint, derived from its text as the specialist prompts';
-#: the second is that of a session that plays a playbook.
-JUDGE_PROMPT_VERSION = _version(JUDGE_SYSTEM_PROMPT)
-PLAYBOOK_JUDGE_PROMPT_VERSION = _version(PLAYBOOK_JUDGE_PROMPT)
+@dataclass(frozen=True)
+class JudgePrompts:
+    """The two system prompts for the body's ``facts``: ``plain`` for a session that plays no scheduling playbook,
+    ``playbook`` for one that plays one."""
+
+    plain: str
+    playbook: str
+
+    @classmethod
+    def for_facts(cls, facts: JudgeFacts) -> JudgePrompts:
+        return cls(_system(_WITHOUT_PLAYBOOK, facts), _system(_WITH_PLAYBOOK, facts))
+
+    def system(self, *, plays_playbook: bool) -> str:
+        return self.playbook if plays_playbook else self.plain
+
+    def version(self, *, plays_playbook: bool) -> str:
+        return prompt_version(self.system(plays_playbook=plays_playbook))
 
 
-__all__ = [
-    "JUDGE_PROMPT_VERSION",
-    "JUDGE_SYSTEM_PROMPT",
-    "PLAYBOOK_JUDGE_PROMPT",
-    "PLAYBOOK_JUDGE_PROMPT_VERSION",
-    "REPLY_FORMAT",
-    "PromptParts",
-]
+__all__ = ["REPLY_FORMAT", "VERSION_HEX", "JudgePrompts", "PromptParts", "prompt_version"]

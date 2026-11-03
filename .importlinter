@@ -273,8 +273,57 @@ name = the multi-branch modules build on its contracts, never the reverse
 type = layers
 # Each module implements the protocols contracts declares for its peers, so the contracts sit below all of them.
 layers =
-    hyperloom_multibranch.cli : hyperloom_multibranch.scheduling : hyperloom_multibranch.specialist : hyperloom_multibranch.blackboard : hyperloom_multibranch.rulegate : hyperloom_multibranch.repo : hyperloom_multibranch.toolbox
+    hyperloom_multibranch.cli : hyperloom_multibranch.scheduling : hyperloom_multibranch.specialist : hyperloom_multibranch.blackboard : hyperloom_multibranch.rulegate : hyperloom_multibranch.repo : hyperloom_multibranch.toolbox : hyperloom_multibranch.brain
     hyperloom_multibranch.contracts
+
+
+[importlinter:contract:mb-brain-sees-contracts]
+name = the multi-branch brain sees the contracts, never the body
+type = forbidden
+# The brain decides how to search and is replaced, or rewritten by the RSI, on its own: what it may read of the
+# session is what contracts/brain.py hands it, and it does no I/O of its own.
+source_modules = hyperloom_multibranch.brain
+forbidden_modules =
+    hyperloom_multibranch.cli
+    hyperloom_multibranch.scheduling
+    hyperloom_multibranch.specialist
+    hyperloom_multibranch.blackboard
+    hyperloom_multibranch.rulegate
+    hyperloom_multibranch.repo
+    hyperloom_multibranch.toolbox
+    hyperloom.agents
+    hyperloom.cli
+    hyperloom.contracts
+    hyperloom.hosted
+    hyperloom.inference_optimizer
+    hyperloom.measure
+    hyperloom.orchestrator
+    hyperloom.sandbox
+    hyperloom.common.io
+    hyperloom.common.env
+    hyperloom.common.llm_config
+ignore_imports =
+    hyperloom_multibranch.**.tests.** -> **
+unmatched_ignore_imports_alerting = none
+
+
+[importlinter:contract:mb-brain-loaded-by-name]
+name = the multi-branch body reaches the brain only through brain_link's loader
+type = forbidden
+# brain_link imports the brain by name at run time, so any brain written against the contract fits the body.
+source_modules =
+    hyperloom_multibranch.cli
+    hyperloom_multibranch.scheduling
+    hyperloom_multibranch.specialist
+    hyperloom_multibranch.blackboard
+    hyperloom_multibranch.rulegate
+    hyperloom_multibranch.repo
+    hyperloom_multibranch.toolbox
+    hyperloom_multibranch.contracts
+forbidden_modules = hyperloom_multibranch.brain
+ignore_imports =
+    hyperloom_multibranch.**.tests.** -> **
+unmatched_ignore_imports_alerting = none
 
 
 [importlinter:contract:kf-public-interfaces]
