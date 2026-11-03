@@ -10,14 +10,16 @@ branch lies behind the integration head, which branches lead it while their comm
 of the integration head runs, the GPU hours (tests' and leases' alike) and LLM tokens the session has used, and what
 is known of each running branch's specialist and which explore tests each branch has queued). The judge answers with
 one JSON
-object, which :func:`parse_decision` reads and :func:`cap_decision` cuts to the caps and to the branches that are
-still live. A failed call or an unreadable reply gives ``None``, and the scheduler keeps the status quo. The judge
-never calls a peer; the scheduler applies its decision. The judge may neither stop nor lower the K of a held branch
+object, which the brain reads and :func:`cap_decision` cuts to the caps and to the branches that are still live.
+What the prompt says and how the reply is read are the brain's (:mod:`hyperloom_multibranch.contracts.brain`): the
+body hands it the view as an observation (:func:`observe`) and records every model call it made. A failed call or an
+unreadable reply gives ``None``, and the scheduler keeps the status quo. The judge never calls a peer; the scheduler
+applies its decision. The judge may neither stop nor lower the K of a held branch
 (:func:`held_branches`): a specialist branch until its grace of explore tests measured (:func:`session_grace`) and a
 repair branch for its protected period, unless its specialist gave up or its judging failed, and a branch with a
-candidate waiting for its confirm, unless its judging failed. In a session that plays a scheduling playbook, the judge
-reads :data:`~hyperloom_multibranch.scheduling.judge_prompt.PLAYBOOK_JUDGE_PROMPT`, where the stall evidence is the one
-stop rule for a stall, and the playbook's safety envelope refuses the stop, though not a lower K, of a branch with a
+candidate waiting for its confirm, unless its judging failed. In a session that plays a scheduling playbook, the
+observation carries the playbook, whose stall evidence is the one stop rule for a stall, and the playbook's safety
+envelope refuses the stop, though not a lower K, of a branch with a
 near-bar or a stranded lead and of one drawn for probation (:func:`envelope_holds`). The scheduler finds the held branches again as it applies the decision, since a
 candidate can start waiting while the judge answers, and :func:`hold_decision` refuses their orders and names them in
 the decision.
@@ -25,16 +27,15 @@ the decision.
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
 from hyperloom.common.io import append_jsonl
-from hyperloom.common.jsonio import extract_last_json_with_key
 from hyperloom.contracts.measurement import Purpose, Validity
+from hyperloom_multibranch.contracts.brain import Brain, JudgeAnswer, JudgeObservation, KOrder, StopOrder
 from hyperloom_multibranch.contracts.lifecycle import SpecialistStatus
 from hyperloom_multibranch.contracts.blackboard import INTEGRATION_BRANCH
 from hyperloom_multibranch.contracts.intent import Intent
@@ -49,12 +50,12 @@ from hyperloom_multibranch.blackboard.rsi.frontier import (
 )
 from hyperloom_multibranch.blackboard.rsi.playbook import PlaybookPlay
 from hyperloom_multibranch.blackboard.rsi.stranded import StrandedLead
+from hyperloom_multibranch.scheduling.brain_link import load_brain
 from hyperloom_multibranch.scheduling.branches import REPAIR_PROTECTED_SECONDS
 from hyperloom_multibranch.scheduling.clock import Clock
 from hyperloom_multibranch.scheduling.events import SessionEvent
 from hyperloom_multibranch.scheduling.forks import PendingBranch
-from hyperloom_multibranch.scheduling.judge_prompt import JUDGE_SYSTEM_PROMPT, PLAYBOOK_JUDGE_PROMPT, REPLY_FORMAT
-from hyperloom_multibranch.contracts.llm import Completion, CompletionFailed
+from hyperloom_multibranch.contracts.llm import Completion
 from hyperloom_multibranch.scheduling.roster import (
     BranchEntry,
     BranchKind,
@@ -65,17 +66,11 @@ from hyperloom_multibranch.scheduling.roster import (
 from hyperloom_multibranch.scheduling.similarity import SimilarBranch
 from hyperloom_multibranch.scheduling.widening import WideningSignals
 
-_KEY_OPEN = "open"
-_KEY_OPEN_K = "open_k"
-_KEY_FOCUS = "focus"
 _KEY_BRANCHES = "branches"
-_KEY_STOP = "stop"
-_KEY_STOP_SESSION = "stop_session"
 _KEY_BRANCH = "branch"
 #: What the runtime knows of a specialist but the judge's prompt does not name: why an agent's run ended of itself is
 #: the scheduler's stop reason, since the scheduler stops that branch.
 _NOT_JUDGED = frozenset({"finished"})
-_KEY_REASON = "reason"
 #: Decimals the GPU hours in the judge's view are rounded to.
 _GPU_HOURS_DIGITS = 3
 #: Decimals the dollars in the judge's view are rounded to.
@@ -284,18 +279,6 @@ def envelope_holds(
 
 
 @dataclass(frozen=True)
-class KOrder:
-    branch: str
-    k: int
-
-
-@dataclass(frozen=True)
-class StopOrder:
-    branch: str
-    reason: str
-
-
-@dataclass(frozen=True)
 class HeldOrder:
     """A stop or a K the judge gave a held or unsteered branch, refused for ``reason``."""
 
@@ -321,8 +304,17 @@ class JudgeDecision:
     held: tuple[HeldOrder, ...] = ()
 
 
-class _MalformedReply(ValueError):
-    pass
+def decision_of(answer: JudgeAnswer) -> JudgeDecision:
+    """The brain's ``answer`` as a decision, before any cut."""
+
+    return JudgeDecision(
+        open_count=answer.open_count,
+        open_k=answer.open_k,
+        focus=answer.focus,
+        k=answer.k,
+        stop=answer.stop,
+        session_stop=answer.session_stop,
+    )
 
 
 def _hours(hours: float | None) -> float | None:
@@ -421,15 +413,9 @@ def _cold_start(widening: WideningSignals) -> int | str:
     return "unknown" if seconds is None else round(seconds)
 
 
-def system_prompt(view: JudgeView) -> str:
-    """The system prompt for ``view``: :data:`PLAYBOOK_JUDGE_PROMPT` when its session plays a playbook, which the view
-    then shows, and :data:`JUDGE_SYSTEM_PROMPT` otherwise."""
-
-    return PLAYBOOK_JUDGE_PROMPT if view.playbook else JUDGE_SYSTEM_PROMPT
-
-
-def render_prompt(view: JudgeView) -> str:
-    """The user prompt for ``view``; the system prompt is :func:`system_prompt`'s."""
+def observe(view: JudgeView) -> JudgeObservation:
+    """What the brain sees of ``view``: its session state as plain JSON values, with the archive's digest, the open
+    areas and the playbook the session plays."""
 
     progress = {row.branch: row for row in view.progress}
     state = {
@@ -460,85 +446,7 @@ def render_prompt(view: JudgeView) -> str:
         "stranded_leads": [lead.describe() for lead in view.stranded_leads],
         _KEY_BRANCHES: [_branch_row(entry, progress.get(entry.branch), view) for entry in view.roster],
     }
-    history = f"How similar past sessions went:\n{view.history}\n\n" if view.history else ""
-    sections = "".join(f"{text}\n\n" for text in (view.open_areas, view.playbook) if text)
-    return f"Session state:\n{json.dumps(state, indent=2, sort_keys=True)}\n\n{history}{sections}{REPLY_FORMAT}"
-
-
-def _int_field(item: Mapping[str, object], key: str) -> int:
-    value = item.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise _MalformedReply(f"{key} is not an integer: {value!r}")
-    return value
-
-
-def _str_field(item: Mapping[str, object], key: str) -> str:
-    value = item.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise _MalformedReply(f"{key} is not a non-empty string: {value!r}")
-    return value.strip()
-
-
-def _objects(payload: Mapping[str, object], key: str) -> list[Mapping[str, object]]:
-    items = payload.get(key) or []
-    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
-        raise _MalformedReply(f"{key} is not a list of objects")
-    return items
-
-
-def _focus(payload: Mapping[str, object]) -> tuple[str, ...]:
-    items = payload.get(_KEY_FOCUS) or []
-    if not isinstance(items, list) or not all(item is None or isinstance(item, str) for item in items):
-        raise _MalformedReply(f"{_KEY_FOCUS} is not a list of ops")
-    return tuple((item or "").strip() for item in items)
-
-
-def _session_stop(payload: Mapping[str, object]) -> str:
-    request = payload.get(_KEY_STOP_SESSION)
-    if request is None:
-        return ""
-    if not isinstance(request, dict):
-        raise _MalformedReply(f"{_KEY_STOP_SESSION} is neither null nor an object")
-    return _str_field(request, _KEY_REASON)
-
-
-def _stop_only(reply: str) -> JudgeDecision | None:
-    payload = extract_last_json_with_key(reply, _KEY_STOP_SESSION)
-    if payload is None or payload[_KEY_STOP_SESSION] is None:
-        return None
-    try:
-        return JudgeDecision(session_stop=_session_stop(payload))
-    except _MalformedReply:
-        return None
-
-
-def parse_decision(reply: str) -> JudgeDecision | None:
-    """The decision in ``reply``'s last JSON object carrying ``"open"``; ``None`` when it is malformed.
-
-    A reply with no such object decides only when its last object carrying ``"stop_session"`` asks to stop the
-    session: that decision opens nothing and gives no order. Any other reply holds no decision.
-    """
-
-    payload = extract_last_json_with_key(reply, _KEY_OPEN)
-    if payload is None:
-        return _stop_only(reply)
-    try:
-        return JudgeDecision(
-            open_count=_int_field(payload, _KEY_OPEN),
-            open_k=_int_field(payload, _KEY_OPEN_K) if _KEY_OPEN_K in payload else 1,
-            focus=_focus(payload),
-            k=tuple(
-                KOrder(_str_field(item, _KEY_BRANCH), _int_field(item, "k"))
-                for item in _objects(payload, _KEY_BRANCHES)
-            ),
-            stop=tuple(
-                StopOrder(_str_field(item, _KEY_BRANCH), _str_field(item, _KEY_REASON))
-                for item in _objects(payload, _KEY_STOP)
-            ),
-            session_stop=_session_stop(payload),
-        )
-    except _MalformedReply:
-        return None
+    return JudgeObservation(state=state, history=view.history, open_areas=view.open_areas, playbook=view.playbook)
 
 
 def cap_decision(decision: JudgeDecision, view: JudgeView) -> JudgeDecision:
@@ -608,31 +516,25 @@ def hold_decision(
 
 @dataclass(frozen=True)
 class Judge:
-    """Asks ``completion`` for a decision and appends every exchange to the ``transcript`` JSONL file."""
+    """Asks the ``brain`` for a decision over ``completion`` and appends every model call it made to the
+    ``transcript`` JSONL file."""
 
     completion: Completion
     transcript: Path
     clock: Clock
+    brain: Brain = field(default_factory=load_brain)
 
     async def decide(self, view: JudgeView) -> JudgeDecision | None:
-        """The capped decision for ``view``; ``None`` when the call failed or the reply held none."""
+        """The capped decision for ``view``; ``None`` when the brain gave no answer."""
 
-        prompt = render_prompt(view)
-        reply = ""
-        decision = None
-        try:
-            reply = (await self.completion(system_prompt(view), prompt)).text
-        except CompletionFailed as exc:
-            error = str(exc)
-        else:
-            decision = parse_decision(reply)
-            error = "" if decision is not None else "the reply holds no well-formed decision object"
-        append_jsonl(
-            self.transcript,
-            {"at": self.clock.now(), "prompt": prompt, "reply": reply, "error": error},
-            make_parents=True,
-        )
-        return cap_decision(decision, view) if decision is not None else None
+        outcome = await self.brain.judge_round(observe(view), self.completion)
+        for exchange in outcome.exchanges:
+            append_jsonl(
+                self.transcript,
+                {"at": self.clock.now(), "prompt": exchange.prompt, "reply": exchange.reply, "error": exchange.error},
+                make_parents=True,
+            )
+        return cap_decision(decision_of(outcome.answer), view) if outcome.answer is not None else None
 
 
 __all__ = [
@@ -648,12 +550,11 @@ __all__ = [
     "QueuedIntent",
     "StopOrder",
     "cap_decision",
+    "decision_of",
     "envelope_holds",
-    "parse_decision",
     "held_branches",
     "queued_intents",
     "hold_decision",
-    "render_prompt",
+    "observe",
     "session_grace",
-    "system_prompt",
 ]

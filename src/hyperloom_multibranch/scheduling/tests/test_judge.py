@@ -54,19 +54,14 @@ from hyperloom_multibranch.scheduling.judge import (
     cap_decision,
     envelope_holds,
     held_branches,
+    decision_of,
     hold_decision,
-    parse_decision,
+    observe,
     queued_intents,
-    render_prompt,
     session_grace,
-    system_prompt,
 )
-from hyperloom_multibranch.scheduling.judge_prompt import (
-    JUDGE_PROMPT_VERSION,
-    JUDGE_SYSTEM_PROMPT,
-    PLAYBOOK_JUDGE_PROMPT,
-    PLAYBOOK_JUDGE_PROMPT_VERSION,
-)
+from hyperloom_multibranch.brain.judge import JudgePrompts, parse_answer, user_prompt
+from hyperloom_multibranch.scheduling.brain_link import JUDGE_FACTS
 from hyperloom_multibranch.scheduling.forks import PendingBranch
 from hyperloom_multibranch.contracts.llm import CompletionFailed, CompletionReply
 from hyperloom_multibranch.scheduling.roster import (
@@ -82,6 +77,26 @@ from hyperloom_multibranch.scheduling.similarity import SimilarBranch
 from hyperloom_multibranch.scheduling.widening import WideningSignals
 from hyperloom_multibranch.toolbox.fake import FakeToolbox, FakeWiring
 from hyperloom_multibranch.toolbox.fake_builds import FakeBuildDriver
+
+PROMPTS = JudgePrompts.for_facts(JUDGE_FACTS)
+JUDGE_SYSTEM_PROMPT = PROMPTS.plain
+PLAYBOOK_JUDGE_PROMPT = PROMPTS.playbook
+JUDGE_PROMPT_VERSION = PROMPTS.version(plays_playbook=False)
+PLAYBOOK_JUDGE_PROMPT_VERSION = PROMPTS.version(plays_playbook=True)
+
+
+def render_prompt(view: JudgeView) -> str:
+    return user_prompt(observe(view))
+
+
+def system_prompt(view: JudgeView) -> str:
+    return PROMPTS.system(plays_playbook=observe(view).plays_playbook)
+
+
+def parse_decision(reply: str) -> JudgeDecision | None:
+    answer = parse_answer(reply)
+    return None if answer is None else decision_of(answer)
+
 
 METRIC = "output_throughput"
 NOW = 1000.0

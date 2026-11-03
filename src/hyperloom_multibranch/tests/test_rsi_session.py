@@ -62,12 +62,8 @@ from hyperloom_multibranch.blackboard.rsi.session import NO_PLAYBOOK_PLAYED, STO
 from hyperloom_multibranch.blackboard.tools import CODE_TITLE, SETTINGS_TITLE
 from hyperloom_multibranch.scheduling.explore import PLAYBOOK_FALLBACK_REASON, PLAYBOOK_OPEN_CUT_REASON
 from hyperloom_multibranch.scheduling.judge import GRACE_KEY, HoldReason
-from hyperloom_multibranch.scheduling.judge_prompt import (
-    JUDGE_PROMPT_VERSION,
-    JUDGE_SYSTEM_PROMPT,
-    PLAYBOOK_JUDGE_PROMPT,
-    PLAYBOOK_JUDGE_PROMPT_VERSION,
-)
+from hyperloom_multibranch.brain.judge import JudgePrompts
+from hyperloom_multibranch.scheduling.brain_link import JUDGE_FACTS
 from hyperloom_multibranch.scheduling.lifecycle import JUDGE_PROMPT_KEY
 from hyperloom_multibranch.scheduling.manifest import read_manifest
 from hyperloom_multibranch.scheduling.settings import PlaybookMode
@@ -92,6 +88,11 @@ from hyperloom_multibranch.tests.test_skeleton import (
     _stage,
     child_framework,
 )
+
+_PROMPTS = JudgePrompts.for_facts(JUDGE_FACTS)
+JUDGE_SYSTEM_PROMPT, PLAYBOOK_JUDGE_PROMPT = _PROMPTS.plain, _PROMPTS.playbook
+JUDGE_PROMPT_VERSION = _PROMPTS.version(plays_playbook=False)
+PLAYBOOK_JUDGE_PROMPT_VERSION = _PROMPTS.version(plays_playbook=True)
 
 #: ``child_framework`` is test_skeleton's autouse fixture, imported so that it applies here too: each session's PRELUDE
 #: child roots on the framework checkout it was built on, as the root the session commits before it starts does.

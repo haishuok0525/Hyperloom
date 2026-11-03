@@ -42,6 +42,7 @@ from hyperloom.common.outside_facts.rule_pack import rule_pack_identity
 from hyperloom.measure.compile import LocalBlobStore
 from hyperloom.measure.versions import socket_versions
 from hyperloom.orchestrator.knowledge.remote_recipe.client import RemoteRecipeClient
+from hyperloom_multibranch.contracts.brain import JUDGE_PROMPT_KEY
 from hyperloom_multibranch.contracts.fork import ShareRequest
 from hyperloom_multibranch.contracts.blackboard import INTEGRATION_BRANCH, Role, Writer
 from hyperloom_multibranch.contracts.blackboard.interfaces import UsageSink
@@ -89,7 +90,7 @@ from hyperloom_multibranch.scheduling.final import FinalCandidates, FinalChoice,
 from hyperloom_multibranch.scheduling.forks import ForkDesk
 from hyperloom_multibranch.scheduling.integrator import Integrator, LlmPatchResolver, MergeRecords
 from hyperloom_multibranch.scheduling.judge import GRACE_KEY, Judge, session_grace
-from hyperloom_multibranch.scheduling.judge_prompt import JUDGE_PROMPT_VERSION, PLAYBOOK_JUDGE_PROMPT_VERSION
+from hyperloom_multibranch.scheduling.brain_link import load_brain
 from hyperloom_multibranch.scheduling.layout import SessionLayout
 from hyperloom_multibranch.contracts.llm import Completion
 from hyperloom_multibranch.scheduling.llm import recorded
@@ -164,9 +165,6 @@ POLICY_VERSIONS = {
     "quota": QUOTA_POLICY_VERSION,
     "scheduling": policy_version(SCHEDULING_POLICY),
 }
-#: The ``policy_versions`` key of the judge prompt's version: :data:`PLAYBOOK_JUDGE_PROMPT_VERSION` in a session that
-#: plays a scheduling playbook, :data:`JUDGE_PROMPT_VERSION` in one that plays none.
-JUDGE_PROMPT_KEY = "judge_prompt"
 #: The ``policy_versions`` key of the RSI lesson pool's digest as the specialists' recall read it, empty for no pool:
 #: two sessions of one build that were shown different past lessons differ here.
 LESSONS_KEY = "lessons"
@@ -375,10 +373,12 @@ class Session:
         return Integrator(records, repo, checks, resolver, self._clock)
 
     def _open_llm_roles(self, services: SessionServices) -> None:
-        """The judge, and the playbook author and the curator CLOSE asks, each recording its spend on the blackboard."""
+        """The brain the session runs, the judge that asks it, and the playbook author and the curator CLOSE asks, each
+        recording its spend on the blackboard."""
 
+        self._brain = load_brain()
         judge = recorded(services.judge_completion, self._blackboard, UsageSource.JUDGE)
-        self._judge = Judge(judge, self._layout.judge, self._clock)
+        self._judge = Judge(judge, self._layout.judge, self._clock, self._brain)
         author = recorded(services.author_completion, self._blackboard, UsageSource.AUTHOR)
         self._author = CloseAuthoring(author, services.author_model)
         curator = recorded(services.author_completion, self._blackboard, UsageSource.CURATOR)
@@ -846,7 +846,7 @@ class Session:
         learnings, play = self._briefs.learnings, self._play
         return {
             **POLICY_VERSIONS,
-            JUDGE_PROMPT_KEY: PLAYBOOK_JUDGE_PROMPT_VERSION if play is not None else JUDGE_PROMPT_VERSION,
+            **self._brain.versions(plays_playbook=play is not None),
             GRACE_KEY: str(session_grace(play)),
             LESSONS_KEY: learnings.past_revision() if learnings is not None else "",
             **(play.versions() if play is not None else {}),

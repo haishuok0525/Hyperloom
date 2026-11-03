@@ -124,7 +124,8 @@ from hyperloom_multibranch.scheduling.exports import IMAGE_CHECK_FILE
 from hyperloom_multibranch.scheduling.final import INTEGRATION_LABEL, PRIMARY_POINT_ONLY
 from hyperloom_multibranch.scheduling import judge
 from hyperloom_multibranch.scheduling.judge import GRACE_KEY, HoldReason
-from hyperloom_multibranch.scheduling.judge_prompt import JUDGE_PROMPT_VERSION
+from hyperloom_multibranch.brain.judge import JudgePrompts
+from hyperloom_multibranch.scheduling.brain_link import JUDGE_FACTS
 from hyperloom_multibranch.scheduling.integrator import ADOPTING_LEAD
 from hyperloom_multibranch.scheduling.layout import SessionLayout, create_session
 from hyperloom_multibranch.scheduling import lifecycle
@@ -219,6 +220,8 @@ from hyperloom_multibranch.specialist.directions import DIRECTIONS
 from hyperloom_multibranch.specialist.dossier_pass import DossierOutcome, DossierPass, DossierStart
 from hyperloom_multibranch.specialist.prompts import prompt_versions
 from hyperloom_multibranch.specialist.runtime import MAX_LOSS_RESTARTS, SessionCrashed
+
+JUDGE_PROMPT_VERSION = JudgePrompts.for_facts(JUDGE_FACTS).version(plays_playbook=False)
 
 START = 1_700_000_000.0
 #: Real seconds a PRELUDE child lingers so that what PRELUDE submits beside it is submitted while it runs.
