@@ -4,7 +4,9 @@
 """Brain v0: the multi-branch scheduler's decisions as the body made them at :data:`BODY_BASELINE_COMMIT`.
 
 It answers :attr:`~hyperloom_multibranch.contracts.brain.CallSite.JUDGE_ROUND` with the judge prompt and reply format
-the scheduler used, so a session run on it is the session the body ran before the brain was cut out.
+the scheduler used, and :attr:`~hyperloom_multibranch.contracts.brain.CallSite.BRANCH_BRIEF` with the specialist's role,
+launch prompt and session messages it sent, so a session run on it is the session the body ran before the brain was
+cut out.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from hyperloom_multibranch.brain.judge import JudgePrompts, judge_round
+from hyperloom_multibranch.brain.specialist import SpecialistPrompts
 from hyperloom_multibranch.contracts.brain import (
     BRAIN_CONTRACT_VERSION,
     BRAIN_KEY,
@@ -34,9 +37,11 @@ class BrainV0:
 
     setup: BrainSetup
     prompts: JudgePrompts = field(init=False)
+    voice: SpecialistPrompts = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "prompts", JudgePrompts.for_facts(self.setup.judge))
+        object.__setattr__(self, "voice", SpecialistPrompts(self.setup.specialist))
 
     @property
     def name(self) -> str:
@@ -48,7 +53,11 @@ class BrainV0:
 
     @property
     def call_sites(self) -> frozenset[CallSite]:
-        return frozenset({CallSite.JUDGE_ROUND})
+        return frozenset({CallSite.JUDGE_ROUND, CallSite.BRANCH_BRIEF})
+
+    @property
+    def specialist(self) -> SpecialistPrompts:
+        return self.voice
 
     def versions(self, *, plays_playbook: bool) -> Mapping[str, str]:
         return {BRAIN_KEY: self.name, JUDGE_PROMPT_KEY: self.prompts.version(plays_playbook=plays_playbook)}

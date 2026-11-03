@@ -5,8 +5,7 @@
 
 from __future__ import annotations
 
-from hyperloom_multibranch.scheduling.policy import SCHEDULING_POLICY, policy_version
-from hyperloom_multibranch.specialist.prompts import VERSION_HEX
+from hyperloom_multibranch.scheduling.policy import SCHEDULING_POLICY, VERSION_HEX, policy_version
 
 
 def test_different_policy_values_get_different_versions() -> None:

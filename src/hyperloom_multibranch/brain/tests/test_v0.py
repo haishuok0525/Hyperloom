@@ -25,7 +25,7 @@ from hyperloom_multibranch.contracts.brain import (
 )
 from hyperloom_multibranch.contracts.llm import CompletionFailed, CompletionReply
 from hyperloom_multibranch.contracts.llm_prices import TokenCounts
-from hyperloom_multibranch.scheduling.brain_link import JUDGE_FACTS
+from hyperloom_multibranch.scheduling.brain_link import JUDGE_FACTS, specialist_facts
 
 #: The judge prompt versions the scheduler recorded at :data:`BODY_BASELINE_COMMIT`, without and with a playbook.
 BASELINE_PROMPT_VERSIONS = ("c0f88a655700", "16ef19bcdfa4")
@@ -33,18 +33,18 @@ STATE = {"metric": "output_throughput", "opening": False, "branches": [{"branch"
 
 
 def _brain() -> BrainV0:
-    return BrainV0(BrainSetup(judge=JUDGE_FACTS))
+    return BrainV0(BrainSetup(judge=JUDGE_FACTS, specialist=specialist_facts()))
 
 
 def _reply(text: str) -> CompletionReply:
     return CompletionReply(text, TokenCounts(), None)
 
 
-def test_v0_answers_the_judge_round_under_the_current_contract() -> None:
+def test_v0_answers_the_judge_round_and_the_branch_brief_under_the_current_contract() -> None:
     brain = _brain()
 
     assert (brain.name, brain.contract_version) == ("v0", BRAIN_CONTRACT_VERSION)
-    assert brain.call_sites == frozenset({CallSite.JUDGE_ROUND})
+    assert brain.call_sites == frozenset({CallSite.JUDGE_ROUND, CallSite.BRANCH_BRIEF})
     assert len(BODY_BASELINE_COMMIT) == 40
 
 

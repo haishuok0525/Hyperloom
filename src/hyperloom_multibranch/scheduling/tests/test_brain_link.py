@@ -15,7 +15,13 @@ import pytest
 from hyperloom_multibranch.brain import BrainV0
 from hyperloom_multibranch.contracts.brain import BrainSetup, CallSite, JudgeObservation, JudgeRound
 from hyperloom_multibranch.contracts.llm import Completion
-from hyperloom_multibranch.scheduling.brain_link import BRAIN_ENV, JUDGE_FACTS, BrainLoadError, load_brain
+from hyperloom_multibranch.scheduling.brain_link import (
+    BRAIN_ENV,
+    JUDGE_FACTS,
+    BrainLoadError,
+    load_brain,
+    specialist_facts,
+)
 
 MODULE = "hyperloom_multibranch_test_brains"
 
@@ -24,8 +30,12 @@ MODULE = "hyperloom_multibranch_test_brains"
 class _Brain:
     setup: BrainSetup
     contract_version: str = "0.9"
-    call_sites: frozenset[CallSite] = frozenset({CallSite.JUDGE_ROUND})
+    call_sites: frozenset[CallSite] = frozenset({CallSite.JUDGE_ROUND, CallSite.BRANCH_BRIEF})
     name: str = "test"
+
+    @property
+    def specialist(self) -> object:
+        return object()
 
     def versions(self, *, plays_playbook: bool) -> Mapping[str, str]:
         return {}
@@ -39,7 +49,8 @@ def _brains(monkeypatch: pytest.MonkeyPatch) -> None:
     module = types.ModuleType(MODULE)
     module.Fits = _Brain
     module.NextMajor = lambda setup: _Brain(setup, contract_version="1.0")
-    module.NoJudge = lambda setup: _Brain(setup, call_sites=frozenset())
+    module.NoJudge = lambda setup: _Brain(setup, call_sites=frozenset({CallSite.BRANCH_BRIEF}))
+    module.NoBrief = lambda setup: _Brain(setup, call_sites=frozenset({CallSite.JUDGE_ROUND}))
     module.NotCallable = 3
     monkeypatch.setitem(sys.modules, MODULE, module)
     monkeypatch.delenv(BRAIN_ENV, raising=False)
@@ -49,7 +60,7 @@ def test_the_default_brain_is_v0_built_for_the_body_numbers() -> None:
     brain = load_brain()
 
     assert isinstance(brain, BrainV0)
-    assert brain.setup == BrainSetup(judge=JUDGE_FACTS)
+    assert brain.setup == BrainSetup(judge=JUDGE_FACTS, specialist=specialist_facts())
 
 
 def test_the_environment_names_another_brain_of_the_same_major_version(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,6 +80,7 @@ def test_the_environment_names_another_brain_of_the_same_major_version(monkeypat
         (f"{MODULE}:NotCallable", "is not callable"),
         (f"{MODULE}:NextMajor", "speaks contract 1.0"),
         (f"{MODULE}:NoJudge", "does not answer ['judge_round']"),
+        (f"{MODULE}:NoBrief", "does not answer ['branch_brief']"),
     ],
 )
 def test_a_brain_this_body_cannot_run_is_refused(spec: str, why: str) -> None:

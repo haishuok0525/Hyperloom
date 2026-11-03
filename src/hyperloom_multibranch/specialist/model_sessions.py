@@ -45,8 +45,8 @@ def model_sessions(
     branch_dir: Callable[[str], Path],
     blackboard_for: Callable[[str], SessionBlackboard],
 ) -> ModelSessions:
-    """The sessions of one session's specialists; ``setup.role`` is the
-    :func:`~hyperloom_multibranch.specialist.prompts.role_prompt` of the session's workload."""
+    """The sessions of one session's specialists; ``setup.role`` is the role the brain's specialist voice gives the
+    session's workload."""
     if not base.path.exists():
         base.build(components)
 

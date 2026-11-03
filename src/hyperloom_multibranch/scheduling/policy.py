@@ -23,7 +23,9 @@ from hyperloom_multibranch.scheduling.events import MB_BIG_GAIN_BARS, MB_BOTTLEN
 from hyperloom_multibranch.scheduling.final import MB_SWEEP_DEGRADATION_PCT
 from hyperloom_multibranch.scheduling.similarity import MB_SIMILARITY_THRESHOLD
 from hyperloom_multibranch.scheduling.widening import MB_MIN_USEFUL_COLD_STARTS
-from hyperloom_multibranch.specialist.prompts import VERSION_HEX
+
+#: Hex digits of a policy's sha256 that name its version, as agreed for the manifest fingerprint.
+VERSION_HEX = 12
 
 SCHEDULING_POLICY: Mapping[str, float] = MappingProxyType(
     {
@@ -46,4 +48,4 @@ def policy_version(policy: Mapping[str, float]) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:VERSION_HEX]
 
 
-__all__ = ["SCHEDULING_POLICY", "policy_version"]
+__all__ = ["SCHEDULING_POLICY", "VERSION_HEX", "policy_version"]

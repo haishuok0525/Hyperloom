@@ -21,9 +21,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from hyperloom_multibranch.contracts.brain_brief import SpecialistFacts, SpecialistVoice
 from hyperloom_multibranch.contracts.llm import Completion
 
-BRAIN_CONTRACT_VERSION = "0.1"
+BRAIN_CONTRACT_VERSION = "0.2"
 #: The ``policy_versions`` key naming the brain a session ran.
 BRAIN_KEY = "brain"
 #: The ``policy_versions`` key of the judge prompt's version.
@@ -61,9 +62,11 @@ class JudgeFacts:
 
 @dataclass(frozen=True)
 class BrainSetup:
-    """What the body hands a brain as it is built."""
+    """What the body hands a brain as it is built: the numbers its judge steers within, and the words its specialist
+    prompts cite."""
 
     judge: JudgeFacts
+    specialist: SpecialistFacts
 
 
 @dataclass(frozen=True)
@@ -129,7 +132,8 @@ class JudgeRound:
 
 class Brain(Protocol):
     """A brain the body loads: its ``name``, the contract version it was written against, the call sites it answers,
-    the versions it records in the session's manifest fingerprint, and its answers.
+    the versions it records in the session's manifest fingerprint, its answers, and the ``specialist`` voice every
+    branch's specialist is told through (:attr:`CallSite.BRANCH_BRIEF`).
 
     The body calls a site only when the brain lists it. A call may raise only what its ``llm`` raises other than
     :class:`~hyperloom_multibranch.contracts.llm.CompletionFailed`, which the brain turns into no answer.
@@ -143,6 +147,9 @@ class Brain(Protocol):
 
     @property
     def call_sites(self) -> frozenset[CallSite]: ...
+
+    @property
+    def specialist(self) -> SpecialistVoice: ...
 
     def versions(self, *, plays_playbook: bool) -> Mapping[str, str]: ...
 

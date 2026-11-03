@@ -637,6 +637,21 @@ def _specialist_role(workload: Workload) -> str:
     )
 
 
+def _role(wiring: SessionWiring) -> str:
+    """The role the session's brain gives every specialist of the session ``wiring`` is for."""
+
+    from hyperloom_multibranch.specialist.brief_views import role_ask
+
+    setup = wiring.setup
+    ask = role_ask(
+        _specialist_role(setup.workload),
+        references=setup.references,
+        dev_leases=wiring.dev_leases.limits.cap if wiring.dev_leases else 0,
+        native=wiring.native,
+    )
+    return setup.brain.specialist.role(ask)
+
+
 #: The component every session's source base lays out beside the framework when the image has a develop install of it.
 AITER = "aiter"
 
@@ -658,18 +673,12 @@ def model_backed_sessions(command: AgentCommand) -> SpecialistSessions:
         from hyperloom_multibranch.specialist.agent_sessions import AgentSessions, with_agents
         from hyperloom_multibranch.specialist.gate_client import GateClient
         from hyperloom_multibranch.specialist.model_sessions import model_sessions
-        from hyperloom_multibranch.specialist.prompts import role_prompt
         from hyperloom_multibranch.specialist.worktree import SourceBase
 
         layout, workload = wiring.setup.layout, wiring.setup.workload
         agent = AgentSetup(
             command=command,
-            role=role_prompt(
-                _specialist_role(workload),
-                references=wiring.setup.references,
-                dev_leases=wiring.dev_leases.limits.cap if wiring.dev_leases else 0,
-                native=wiring.native,
-            ),
+            role=_role(wiring),
             env=build_specialist_env(),
             runner=LocalAgentRunner(
                 session_dir=layout.logs, liveness=Liveness(lost_after_seconds=SPECIALIST_LOST_AFTER_S)
@@ -677,6 +686,7 @@ def model_backed_sessions(command: AgentCommand) -> SpecialistSessions:
             tokens=wiring.tokens,
             processes=wiring.setup.processes,
             repo=wiring.repo,
+            voice=wiring.setup.brain.specialist,
             briefs=wiring.briefs.text,
             dev_leases=wiring.dev_leases,
         )

@@ -142,7 +142,6 @@ from hyperloom_multibranch.scheduling.widening import Widening
 from hyperloom_multibranch.specialist.agent_onboarding import ROOT_PROFILE_SOURCE, AttemptFailed
 from hyperloom_multibranch.specialist.arbor_adapter import REVIEW_HOST, REVIEW_OFF, SplitFailed
 from hyperloom_multibranch.specialist.map_session import MapCalls
-from hyperloom_multibranch.specialist.prompts import prompt_versions
 
 if TYPE_CHECKING:
     from hyperloom_multibranch.specialist.dossier_pass import DossierOutcome, DossierStart
@@ -254,6 +253,7 @@ class Session:
         desk = ForkDesk(self._roster, self._decisions, self._clock)
         self._desk = desk
         self._prelude: PreludeResult | None = None
+        self._brain = load_brain()
         self._map_shares: tuple[RootShares | None] | None = None
         self._explore_end = math.inf
         peers = peer_factory(self._peer_setup(desk, services))
@@ -326,6 +326,7 @@ class Session:
             # The session's review stands in for each Arbor's own; without one, nobody's does.
             REVIEW_HOST if settings.review_gate else REVIEW_OFF,
             MapCalls(self._map_start, self._map_split) if settings.agents else None,
+            self._brain,
         )
 
     def _score_with_defaults(self) -> None:
@@ -373,10 +374,9 @@ class Session:
         return Integrator(records, repo, checks, resolver, self._clock)
 
     def _open_llm_roles(self, services: SessionServices) -> None:
-        """The brain the session runs, the judge that asks it, and the playbook author and the curator CLOSE asks, each
-        recording its spend on the blackboard."""
+        """The judge that asks the session's brain, and the playbook author and the curator CLOSE asks, each recording
+        its spend on the blackboard."""
 
-        self._brain = load_brain()
         judge = recorded(services.judge_completion, self._blackboard, UsageSource.JUDGE)
         self._judge = Judge(judge, self._layout.judge, self._clock, self._brain)
         author = recorded(services.author_completion, self._blackboard, UsageSource.AUTHOR)
@@ -570,7 +570,7 @@ class Session:
             ManifestFingerprint(
                 activity=self._layout.session_id,
                 sockets=sockets,
-                prompt_versions=prompt_versions(),
+                prompt_versions=self._brain.specialist.versions(),
                 policy_versions=self._policy_versions(),
             )
         )
