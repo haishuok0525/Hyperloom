@@ -187,6 +187,7 @@ from hyperloom_multibranch.scheduling.tests.child_sessions import (
     failed_child,
     with_agentx_baseline_run,
 )
+from hyperloom_multibranch.tests.brain_voice import prompt_versions
 from hyperloom_multibranch.tests.fakes import RecordingVerifier
 from hyperloom_multibranch.toolbox.attempts import TestJob
 from hyperloom_multibranch.toolbox.fake_model import DEFAULT_BASELINE
@@ -218,7 +219,6 @@ from hyperloom_multibranch.specialist import autonomous_session
 from hyperloom_multibranch.specialist.arbor_adapter import MAPPED, SplitFailed
 from hyperloom_multibranch.specialist.directions import DIRECTIONS
 from hyperloom_multibranch.specialist.dossier_pass import DossierOutcome, DossierPass, DossierStart
-from hyperloom_multibranch.specialist.prompts import prompt_versions
 from hyperloom_multibranch.specialist.runtime import MAX_LOSS_RESTARTS, SessionCrashed
 
 JUDGE_PROMPT_VERSION = JudgePrompts.for_facts(JUDGE_FACTS).version(plays_playbook=False)

@@ -281,7 +281,7 @@ layers =
 name = the multi-branch brain sees the contracts, never the body
 type = forbidden
 # The brain decides how to search and is replaced, or rewritten by the RSI, on its own: what it may read of the
-# session is what contracts/brain.py hands it, and it does no I/O of its own.
+# session is what contracts/brain.py and contracts/brain_brief.py hand it, and it does no I/O of its own.
 source_modules = hyperloom_multibranch.brain
 forbidden_modules =
     hyperloom_multibranch.cli

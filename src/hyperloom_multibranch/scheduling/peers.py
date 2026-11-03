@@ -13,11 +13,12 @@ session gate judges the tests the scheduler submits itself.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from hyperloom.measure.compile import BlobStore
+from hyperloom_multibranch.contracts.brain import Brain
 from hyperloom_multibranch.contracts.fork import ForkAdmissionService, ReservedBranches
 from hyperloom_multibranch.contracts.gate import RegressionCheck, SessionGate
 from hyperloom_multibranch.contracts.lifecycle import SpecialistLifecycle
@@ -63,6 +64,13 @@ class Peers:
     dossier_pass: DossierPass | None = None
 
 
+def _default_brain() -> Brain:
+    # Imported here: the brain's setup loads main's flow catalogs, which importing the multi-branch command must not.
+    from hyperloom_multibranch.scheduling.brain_link import load_brain
+
+    return load_brain()
+
+
 @dataclass(frozen=True)
 class PeerSetup:
     """What one session's peers are built on.
@@ -82,7 +90,8 @@ class PeerSetup:
     adds to (``""`` when the recipe's is the whole launch), ``agent_port`` the first port of their port blocks,
     ``agent_dossier`` the dossier the run gives every agent branch with its reviewed map (``""`` for none), and
     ``agent_review`` how an Arbor's own review gate is handed over (``AgentSpec.review``: the host reviews, nobody
-    does, or ``""`` for neither), and ``agent_maps`` the scheduler's side of a mapping branch, ``None`` without agents.
+    does, or ``""`` for neither), ``agent_maps`` the scheduler's side of a mapping branch, ``None`` without agents,
+    and ``brain`` the brain the session runs, whose specialist voice tells every branch's specialist what to do.
     """
 
     layout: SessionLayout
@@ -100,6 +109,7 @@ class PeerSetup:
     agent_dossier: str = ""
     agent_review: str = ""
     agent_maps: MapCalls | None = None
+    brain: Brain = field(default_factory=_default_brain)
 
 
 PeerFactory = Callable[[PeerSetup], Peers]

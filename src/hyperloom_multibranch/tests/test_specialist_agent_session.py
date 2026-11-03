@@ -41,6 +41,7 @@ from hyperloom_multibranch.specialist.agent_session import (
 from hyperloom_multibranch.specialist.dev_sandbox import DevLeases, DevLimits, LeaseTerm
 from hyperloom_multibranch.specialist.judging import NOTICE
 from hyperloom_multibranch.specialist.runtime import SessionCrashed, SessionIdle, SessionStart, restart_notice
+from hyperloom_multibranch.tests.brain_voice import VOICE
 from hyperloom_multibranch.tests.branch_rig import branch_rig
 from hyperloom_multibranch.tests.following_rig import diverged
 from hyperloom_multibranch.toolbox.fake import FakeToolbox, FakeWiring
@@ -177,6 +178,7 @@ async def rig(tmp_path):
             tokens=rig.tokens,
             processes=rig.processes,
             repo=repo,
+            voice=VOICE,
             poll_seconds=0.01,
             clock=lambda: clock.now,
             **overrides,

@@ -98,7 +98,8 @@ from hyperloom_multibranch.specialist.remote_sandbox import RemoteAgentSandbox
 from hyperloom_multibranch.toolbox.hosted_leases import HostedBranchLease
 from hyperloom_multibranch.specialist.gate_client import GateClient
 from hyperloom_multibranch.specialist.model_sessions import ModelSessions
-from hyperloom_multibranch.specialist.prompts import role_prompt
+from hyperloom_multibranch.scheduling.brain_link import load_brain
+from hyperloom_multibranch.tests.brain_voice import role_prompt
 from hyperloom_multibranch.specialist.runtime import SessionStart, SpecialistRuntime
 from hyperloom_multibranch.specialist.worktree import BranchWorktree
 from hyperloom_multibranch.toolbox import local_hosted
@@ -925,6 +926,7 @@ async def test_the_specialists_are_told_of_and_give_back_the_dev_sandboxes_the_s
                 agent_pack="",
                 agent_launch="",
                 agent_port=AGENT_PORT,
+                brain=load_brain(),
                 agent_dossier="",
                 agent_review="",
                 agent_maps=None,
@@ -1010,6 +1012,7 @@ def test_the_specialists_source_base_holds_aiter_beside_the_framework_only_from_
             agent_pack="",
             agent_launch="",
             agent_port=AGENT_PORT,
+            brain=load_brain(),
             agent_dossier="",
             agent_review="",
             agent_maps=None,
@@ -1133,6 +1136,7 @@ def test_a_session_on_a_host_that_builds_native_code_lays_out_the_native_tree_an
                 agent_pack="",
                 agent_launch="",
                 agent_port=AGENT_PORT,
+                brain=load_brain(),
                 agent_dossier="",
                 agent_review="",
                 agent_maps=None,

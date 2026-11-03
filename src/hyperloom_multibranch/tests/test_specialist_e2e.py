@@ -33,10 +33,10 @@ from hyperloom_multibranch.specialist.agent_session import AgentCommand, AgentSe
 from hyperloom_multibranch.specialist.directions import DIRECTIONS
 from hyperloom_multibranch.specialist.judging import NOTICE, Judging
 from hyperloom_multibranch.specialist.model_sessions import SESSION_DIR, model_sessions
-from hyperloom_multibranch.specialist.prompts import role_prompt
 from hyperloom_multibranch.specialist.runtime import RuntimePacing, SpecialistRuntime
 from hyperloom_multibranch.specialist.tools import register_worktree_tools
 from hyperloom_multibranch.specialist.worktree import SourceBase
+from hyperloom_multibranch.tests.brain_voice import VOICE, role_prompt
 from hyperloom_multibranch.tests.fakes import RecordingScheduler, RecordingVerifier
 from hyperloom_multibranch.toolbox.fake import FakeExecutor
 from hyperloom_multibranch.toolbox.fake_model import FakeToolboxConfig, NoiseModel
@@ -197,6 +197,7 @@ async def test_a_model_backed_specialist_lands_a_source_change_through_the_sessi
         tokens=McpSpecialistTokens(server),
         processes=_Processes(),
         repo=repo,
+        voice=VOICE,
         min_session_seconds=0.0,
         poll_seconds=0.05,
     )

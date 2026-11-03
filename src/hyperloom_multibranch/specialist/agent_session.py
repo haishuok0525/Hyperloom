@@ -73,6 +73,7 @@ from hyperloom.orchestrator.specialists.agent_runner import (
     InteractiveAgentRunner,
     McpEndpoint,
 )
+from hyperloom_multibranch.contracts.brain_brief import IntegrationMove, ResumeAt, SpecialistVoice
 from hyperloom_multibranch.contracts.branch_log import BranchLogEntry, BranchLogType
 from hyperloom_multibranch.contracts.llm_prices import TokenCounts
 from hyperloom_multibranch.contracts.blackboard.interfaces import (
@@ -93,22 +94,11 @@ from hyperloom_multibranch.contracts.blackboard.records import (
 from hyperloom_multibranch.contracts.blackboard.vocab import INTEGRATION_BRANCH, InboxKind, UsageSource
 from hyperloom_multibranch.contracts.repo import ExperimentRepo
 from hyperloom_multibranch.contracts.toolbox import SCOPE_SPECIALIST, SpecialistGrant, SpecialistTokens
+from hyperloom_multibranch.specialist.brief_views import arrivals, launch_ask, log_lines
 from hyperloom_multibranch.specialist.exhausted import exhausted_refusal
 from hyperloom_multibranch.specialist.following import REROOT, Followed, follow, integration_holdings, reroot_requested
 from hyperloom_multibranch.specialist.judging import NOTICE, left_unjudged
 from hyperloom_multibranch.specialist.llm_usage import launch_cost, launch_usage
-from hyperloom_multibranch.specialist.prompts import (
-    IntegrationHeads,
-    Resume,
-    idle_resume_message,
-    integration_section,
-    launch_prompt,
-    lease_wake_message,
-    nudge_message,
-    resume_message,
-    wait_wake_message,
-    wake_message,
-)
 from hyperloom_multibranch.specialist.runtime import SessionCrashed, SessionIdle, SessionStart, restart_notice
 from hyperloom_multibranch.specialist.tools import sync_to_head
 from hyperloom_multibranch.specialist.worktree import BranchWorktree
@@ -257,7 +247,8 @@ class AgentCommand:
 
 @dataclass(frozen=True)
 class AgentSetup:
-    """What every model-backed session of a session shares: the CLI and its role, and what a session reaches.
+    """What every model-backed session of a session shares: the CLI and its role, what a session reaches, and the
+    brain's ``voice``, which says what the CLI is told at each launch, wake, nudge and resume.
 
     ``env`` is the environment the CLI runs with, the branch's MCP token added; the session decides nothing about it.
     ``briefs(branch, head)`` rebuilds a branch's brief at the head a launch starts at; without it, every launch shows
@@ -276,6 +267,7 @@ class AgentSetup:
     tokens: SpecialistTokens
     processes: Processes
     repo: ExperimentRepo
+    voice: SpecialistVoice
     briefs: Callable[[str, str], Awaitable[str]] | None = None
     session_seconds: float = SPECIALIST_SESSION_S
     min_session_seconds: float = MIN_SESSION_S
@@ -376,9 +368,10 @@ class AgentSession:
         start = await self._briefed(head)
         integration = await self._setup.repo.head(INTEGRATION_BRANCH)
         holdings = _joined(followed.detail if followed else "", await self._holdings(head))
+        voice = self._setup.voice
         prompt = _joined(
-            launch_prompt(start, head=head, worktree=str(worktree.path), recent=recent, last_end=last_end),
-            integration_section(holdings),
+            voice.launch(launch_ask(start, head=head, worktree=str(worktree.path), recent=recent, last_end=last_end)),
+            voice.integration(holdings),
         )
         seen = _Seen((await self._place.blackboard.poll(branch)).cursor, len(recent), integration=integration)
         if not self._setup.command.interactive:
@@ -406,17 +399,17 @@ class AgentSession:
         kept = await asyncio.to_thread(worktree.head) == head
         if not kept:
             head = await sync_to_head(self._setup.repo, branch, worktree)
-        integration = IntegrationHeads(cli.integration, await self._setup.repo.head(INTEGRATION_BRANCH))
+        integration = IntegrationMove(cli.integration, await self._setup.repo.head(INTEGRATION_BRANCH))
         seen = _Seen(cli.seen_cursor, cli.logged, integration=integration.now)
         items, notices = await self._arrived(seen)
-        resume = Resume(cli.reason, head, str(worktree.path), kept=kept)
+        at, voice = ResumeAt(cli.reason, head, str(worktree.path), kept=kept), self._setup.voice
         if cli.idle:
-            prompt = idle_resume_message(resume, integration, items, notices)
+            prompt = voice.idle_resume(at, integration, arrivals(items), log_lines(notices))
         else:
-            prompt = resume_message(resume, items, notices)
+            prompt = voice.resume(at, arrivals(items), log_lines(notices))
         if followed or integration.seen != integration.now:
             holdings = _joined(followed.detail if followed else "", await self._holdings(head))
-            prompt = _joined(prompt, integration_section(holdings))
+            prompt = _joined(prompt, voice.integration(holdings))
         cli = replace(
             cli,
             resumable=False,
@@ -579,7 +572,9 @@ class AgentSession:
             if strain >= _SILENT * len(waits):
                 raise await self._idle_end(handle, launch, quiet)
             try:
-                await self._setup.runner.send(handle, self._setup.command.message(message or nudge_message()).encode())
+                await self._setup.runner.send(
+                    handle, self._setup.command.message(message or self._setup.voice.nudge()).encode()
+                )
             except AgentEnded:
                 return await self._setup.runner.poll(handle)
             sent += 1
@@ -619,8 +614,10 @@ class AgentSession:
                 holdings = (
                     await self._holdings(await self._setup.repo.head(self._start.branch)) if moved or followed else ""
                 )
-                return wake_message(
-                    (*items, *landed), notices, integration=_joined(followed.detail if followed else "", holdings)
+                return self._setup.voice.wake(
+                    arrivals((*items, *landed)),
+                    log_lines(notices),
+                    integration=_joined(followed.detail if followed else "", holdings),
                 )
             pending = await self._pending(seen)
             if pending:
@@ -669,9 +666,9 @@ class AgentSession:
         """The wake for what of the branch still runs, its long dev lease's process, a test of it or another branch's
         profile of its head; ``""`` when none does."""
         if self._dev_lease_busy():
-            return lease_wake_message()
+            return self._setup.voice.lease_wake()
         tests = await self._tests_in_flight()
-        return wait_wake_message(tests, sorted(seen.profiles)) if tests or seen.profiles else ""
+        return self._setup.voice.wait_wake(tests, sorted(seen.profiles)) if tests or seen.profiles else ""
 
     def _dev_lease_busy(self) -> bool:
         return self._setup.dev_leases is not None and self._setup.dev_leases.busy(self._start.branch)

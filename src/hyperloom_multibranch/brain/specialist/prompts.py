@@ -4,40 +4,38 @@
 """What the model behind a branch's specialist is told: its role once, and at every launch where its branch stands.
 
 The role says how a long-running specialist works through the session's tools, what has found gains on ROCm before,
-how its candidates are judged, how it
-declares a correctness fix with its repro case, and which gains the toolbox refuses as fake (main's ``FAKE_GAINS``
-catalog, so a new row reaches the role). The
-launch prompt opens, on a branch log longer than it shows, with a summary of what was tried, its results and the
-latest plan; then the repair a repair branch was opened for, the branch's direction (one the user wrote, or the
-session's) and the startup brief; then the branch, its head, K and the branch's latest memory, so a new session goes
-on where the last one stopped, and what the integration head holds against the branch head. A
-session whose turn ended is woken by :func:`wake_message`, with what its inbox and the runtime's notices brought, or
-by :func:`nudge_message` when nothing came and it has nothing running. A CLI restarted on its crashed conversation
-is told by :func:`resume_message` why it stopped, where its worktree stands and what arrived while it was down; one
-that goes on with an idle session's conversation is told by :func:`idle_resume_message` what changed since its last
-turn, the integration head included.
-:func:`prompt_versions` names the text of all of them for the session's manifest fingerprint.
+how its candidates are judged, how it declares a correctness fix with its repro case, and which gains the toolbox
+refuses as fake (the body's catalog, so a new row reaches the role). The launch prompt opens, on a branch log longer
+than it shows, with a summary of what was tried, its results and the latest plan; then the repair a repair branch was
+opened for, the branch's direction (one the user wrote, or the session's) and the startup brief; then the branch, its
+head, K and the branch's latest memory, so a new session goes on where the last one stopped, and what the integration
+head holds against the branch head. A session whose turn ended is woken with what its inbox and the runtime's notices
+brought, or nudged when nothing came and it has nothing running. A CLI restarted on its crashed conversation is told
+why it stopped, where its worktree stands and what arrived while it was down; one that goes on with an idle session's
+conversation is told what changed since its last turn, the integration head included.
+:meth:`SpecialistPrompts.versions` names the text of all of them for the session's manifest fingerprint.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 
-from hyperloom.measure.runner.native.recipes import NATIVE_BUILD_REFUSE
-from hyperloom.orchestrator.prompts.specialist_prompt_builder import BASH_KILL_SAFETY_PREAMBLE
+from hyperloom_multibranch.contracts.brain_brief import (
+    SPECIALIST_LAUNCH_KEY,
+    SPECIALIST_ROLE_KEY,
+    Arrival,
+    FakeGain,
+    IntegrationMove,
+    LaunchAsk,
+    LogLine,
+    RepairBrief,
+    ResumeAt,
+    RoleAsk,
+    SpecialistFacts,
+)
 from hyperloom_multibranch.contracts.branch_log import BranchLogType
-from hyperloom_multibranch.contracts.fork import RepairRequest
-from hyperloom_multibranch.contracts.blackboard.records import BranchLogRecord, InboxItem
-from hyperloom_multibranch.contracts.sources import NativeTree
-from hyperloom_multibranch.rulegate.fix_case import CASE_SCRIPT
-from hyperloom_multibranch.specialist.directions import DIRECTIONS, direction_name
-from hyperloom_multibranch.specialist.following import REROOT
-from hyperloom_multibranch.specialist.judging import NOTICE
-from hyperloom_multibranch.specialist.runtime import SessionStart, restart_notice
 
 #: Branch-log entries a launch prompt shows; the specialist reads further back with blackboard_branch_log.
 RECENT_ENTRIES = 20
@@ -150,13 +148,12 @@ _LAUNCH = (
     str(ENTRY_CHARS),
     str(SUMMARY_ENTRIES),
     str(SUMMARY_ENTRY_CHARS),
-    *DIRECTIONS,
 )
 
-_ROLE = f"""\
+_ROLE = """\
 You are a long-running optimization specialist on one branch of a Hyperloom multi-branch session.
 
-The session optimizes one workload: {{workload}}. Your branch is a line of commits in the session's experiment \
+The session optimizes one workload: {workload}. Your branch is a line of commits in the session's experiment \
 repository. Each commit is a recipe (server arguments, environment variables, framework patches, kernel artifacts) \
 that measured better than its parent. This conversation lasts as long as your branch runs: when you end a turn, what \
 arrives for your branch (results, judgements, briefs, the runtime's notices) wakes you with a new message. Keep your \
@@ -199,7 +196,7 @@ speeding up a part worth w of the time gains at most w/(1-w), so prefer the dire
 tested or is being tested on this state, its ceiling is below the session's bar, or another branch is testing it \
 (testing_elsewhere), whose outcome then reaches you as a peer_outcome; read that result or choose another direction.
 3. Make the change. For server arguments or environment variables, write the delta's config yourself, with exactly \
-these keys: {{{{"config": {{{{"extra_server_args": "--flag value --other-flag", "extra_envs": {{{{"NAME": "value"}}}}}}}}}}}}. \
+these keys: {{"config": {{"extra_server_args": "--flag value --other-flag", "extra_envs": {{"NAME": "value"}}}}}}. \
 extra_server_args is one string of command-line flags; a key the delta does not define is refused, and the error \
 lists the keys it takes. For source, \
 call worktree_sync, edit the files in your worktree, and call worktree_check with the component until it passes (the \
@@ -242,7 +239,7 @@ reconsider your direction before your next claim.
 6. Read a candidate's gain from its judgement, the gate's verdict and gain over the parent it was measured on, \
 never from figures other branches quote: a test result holds raw rounds, and your parent may not be the root. After \
 every result, write to your branch log (blackboard_append_branch_log): the hypothesis, what you tried, the \
-outcome and why, and your next plan. Entries that start with "{NOTICE}" are the runtime's: a gain that landed, one \
+outcome and why, and your next plan. Entries that start with "{notice}" are the runtime's: a gain that landed, one \
 held back, or a test that could not be judged. What another specialist should know, now or in a later session, goes \
 to blackboard_learn. A learning names its direction and cites its tests in request_ids. A past session's lesson \
 (lsn-...) that this session's tests show wrong here: revise it with supersedes, or retire it with retires when it no \
@@ -252,7 +249,7 @@ Your branch follows the integration head, where the session's gains stack. Your 
 wakes you after it moves, lists what it holds: its launch, the commits merged into it, those your head lacks, and \
 your head's commits not on it with how their merges went. Never test or replay a change it holds: on a head behind \
 it, that measures a gain the session has already and stacks nowhere. When it holds a change your head lacks, move \
-your branch onto it: write a branch-log entry that starts with "{REROOT}" and says why, submit nothing more on your \
+your branch onto it: write a branch-log entry that starts with "{reroot}" and says why, submit nothing more on your \
 old head, and end your turn once your running tests and their retests have landed. The runtime moves your branch at \
 the end of a turn with no candidate test of yours in flight, and the message that wakes you says what it did. Your \
 old head's commits the integration head lacks come back as one delta on the new head: one the integrator has not \
@@ -281,7 +278,7 @@ needs_capability, the path you tried: the file, the call and the error it gave, 
 reopen_if (what would make it worth trying again). It is kept for the record and for later sessions and does not stop your branch. A kernel \
 inside aiter or the framework is not blocked_by_tool: fork it into your worktree. Then take another of the \
 session's directions, preferring one no running branch covers: \
-{{directions}}.
+{directions}.
 
 What has found gains on ROCm before, in any direction:
 - server.log first: a backend that fell back (hipBLASLt, an eager or plain torch path, CUDA graphs off) or JIT \
@@ -387,7 +384,7 @@ Record that an option is unusable here only after a second, independent failure.
 
 Known fake gains: a measurement can show them without the candidate being better, so the toolbox refuses them; do \
 not spend tests on them.
-{{fake_gains}}
+{fake_gains}
 
 A blocked candidate held its gain on the retest and was held back on both measurements by the same defect: the accuracy \
 gate, on InferenceX requests it did not complete (dropped_requests) or long-context prompts it answered worse \
@@ -405,7 +402,7 @@ request_ids, then call decline_repair; it is refused until such a learning exist
 A correctness fix removes a defect your branch head shows (wrong or failed outputs, a crash, a hang). It counts only \
 when the head reproduces the defect, your change removes it, and its trigger is reachable under the session's \
 workload. Declare it with its reproduction case:
-- Write {CASE_SCRIPT}, a bash script the toolbox runs against the test's server, at $HL_BASE_URL serving $HL_MODEL: \
+- Write {case_script}, a bash script the toolbox runs against the test's server, at $HL_BASE_URL serving $HL_MODEL: \
 exit 1 when the defect occurs and 0 when it does not. Any other exit is a broken case, never a fix.
 - Call fix_case with the script and your diagnosis (the defect, its trigger, why the change removes it), then \
 submit_test the fix as any candidate, passing the attachment fix_case returned in attachments.
@@ -416,13 +413,13 @@ the reviewer is recorded only, and a notice says why. A gain that carries a case
 
 Rules:
 - Write only in your worktree and your workspace; the source base and other branches' worktrees are not yours.
-- {{gpu_rule}} A kernel, a tuned table or a patch you cannot verify offline is what a test \
+- {gpu_rule} A kernel, a tuned table or a patch you cannot verify offline is what a test \
 is for, so submit the candidate the evidence favours rather than wait for certainty; a flat or failed result tells \
 the next candidate something.
 - A candidate is one intent, so its result says what that intent is worth. Small changes, each too small to clear \
 the bar alone, may go together as one intent: name every change in its mechanism and give as target_share_pct the \
 summed share of the operators they speed up.
-- {BASH_KILL_SAFETY_PREAMBLE}
+- {bash_safety}
 """
 
 
@@ -456,40 +453,11 @@ _DEV_SANDBOX = (
 )
 
 
-def role_prompt(
-    workload: str,
-    references: Mapping[str, Path] | None = None,
-    *,
-    dev_leases: int = 0,
-    native: Mapping[str, NativeTree] | None = None,
-) -> str:
-    """The system prompt of every session of every specialist; ``workload`` names what the session optimizes,
-    ``references`` the reference material the session was given, each source's name and the directory it was copied
-    to, ``dev_leases`` how many dev sandboxes the session lends at once (none: the specialist has no GPU), and
-    ``native`` the native trees its worktrees hold, by component (none: native code is not built)."""
-    named = " ".join(workload.split())
-    if not named:
-        raise ValueError("a specialist's role names the workload its session optimizes")
-    gpu_rule = _DEV_SANDBOX if dev_leases > 0 else _NO_GPU
-    role = _ROLE.format(workload=named, fake_gains=_fake_gains(), directions=_direction_names(), gpu_rule=gpu_rule)
-    return role + _native(native or {}) + _references(references or {})
-
-
 _NATIVE = """
 Native sources: your worktree also holds, at the commit the image installs, {trees}. An edit there is measured like \
 any other source change: worktree_patch returns a delta that names that commit, and the toolbox compiles the change \
 before the test, which waits as pending_build. A build your change breaks ends compile_error with the compiler's \
 lines. A change to {refused} is refused: the build definition stays as the image has it."""
-
-
-def _native(trees: Mapping[str, NativeTree]) -> str:
-    if not trees:
-        return ""
-    named = ", ".join(
-        f"{component}'s C++/HIP sources under {tree.root.prefix}" for component, tree in sorted(trees.items())
-    )
-    return _NATIVE.format(trees=named, refused=", ".join(NATIVE_BUILD_REFUSE))
-
 
 #: What a well-known reference source holds, by the name a session gives it.
 _HOLDS = {
@@ -506,7 +474,134 @@ _HOLDS = {
 }
 
 
-def _references(references: Mapping[str, Path]) -> str:
+@dataclass(frozen=True)
+class SpecialistPrompts:
+    """Brain v0's specialist voice: the texts above, citing the body's ``facts``."""
+
+    facts: SpecialistFacts
+
+    def role(self, ask: RoleAsk) -> str:
+        """The system prompt of every session of every specialist; a role names the workload its session optimizes,
+        and without dev sandboxes tells the specialist it has no GPU."""
+        named = " ".join(ask.workload.split())
+        if not named:
+            raise ValueError("a specialist's role names the workload its session optimizes")
+        gpu_rule = _DEV_SANDBOX if ask.dev_leases > 0 else _NO_GPU
+        native = _native(ask.native, self.facts.native_refused)
+        return self._role(named, gpu_rule) + native + _references(ask.references)
+
+    def _role(self, workload: str, gpu_rule: str) -> str:
+        facts = self.facts
+        return _ROLE.format(
+            workload=workload,
+            notice=facts.notice,
+            reroot=facts.reroot,
+            case_script=facts.case_script,
+            bash_safety=facts.bash_safety,
+            fake_gains=_fake_gains(facts.fake_gains),
+            directions="; ".join(_direction_name(direction) for direction in facts.directions),
+            gpu_rule=gpu_rule,
+        )
+
+    def launch(self, ask: LaunchAsk) -> str:
+        """The first message of one session of a branch's specialist; a log longer than the launch shows is summed up
+        first."""
+        log = ask.log
+        summary = _summary(log) if len(log) > RECENT_ENTRIES else ""
+        sections = [summary] if summary else []
+        if ask.repair is not None:
+            sections.append(_repair(ask.repair))
+        direction = ask.direction.strip()
+        if direction:
+            sections.append(_DIRECTION.format(direction=direction))
+        brief = ask.brief.strip()
+        if brief:
+            sections.append(_BRIEF.format(brief=brief))
+        sections.append(
+            _STANDING.format(
+                branch=ask.branch, start_commit=ask.start_commit, head=ask.head, k=ask.k, worktree=ask.worktree
+            )
+        )
+        if log:
+            shown = log[-RECENT_ENTRIES:]
+            sections.append(_LOG.format(count=len(shown), entries="\n".join(_entry(line) for line in shown)))
+        else:
+            sections.append(_FIRST)
+        if ask.last_end:
+            sections.append(_ENDED.format(last_end=ask.last_end))
+        return "\n\n".join(sections) + "\n"
+
+    def integration(self, holdings: str) -> str:
+        """``holdings``, what the integration head holds against the branch head, as a launch or a resume ends with
+        it."""
+        return _INTEGRATION.format(integration=holdings)
+
+    def wake(self, arrivals: Sequence[Arrival], notices: Sequence[LogLine], *, integration: str = "") -> str:
+        """The message that wakes a specialist whose turn ended: what its inbox and the runtime's notices brought
+        since, and ``integration``, what the integration head holds, once it moved or the branch followed it."""
+        woken = _WAKE.format(items=_arrivals(arrivals, notices)) if arrivals or notices else _MOVED
+        return f"{woken}\n\n{self.integration(integration)}" if integration else woken
+
+    def resume(self, at: ResumeAt, arrivals: Sequence[Arrival], notices: Sequence[LogLine]) -> str:
+        """The first message of a CLI restarted on its crashed conversation, in place of a launch prompt."""
+        arrived = _ARRIVED.format(items=_arrivals(arrivals, notices)) if arrivals or notices else _NOTHING_ARRIVED
+        return _RESUMED.format(reason=at.reason, worktree=_worktree(at), arrived=arrived)
+
+    def idle_resume(
+        self, at: ResumeAt, integration: IntegrationMove, arrivals: Sequence[Arrival], notices: Sequence[LogLine]
+    ) -> str:
+        """The first message of a CLI that goes on with the conversation of a session that ended idle: what changed
+        since its last turn, in place of a launch prompt."""
+        moved = _INTEGRATION_MOVED if integration.seen != integration.now else _INTEGRATION_STILL
+        arrived = _IDLE_ARRIVED.format(items=_arrivals(arrivals, notices)) if arrivals or notices else _IDLE_NOTHING
+        return _IDLE_RESUMED.format(
+            reason=at.reason,
+            worktree=_worktree(at),
+            integration=moved.format(seen=integration.seen, now=integration.now),
+            arrived=arrived,
+        )
+
+    def lease_wake(self) -> str:
+        """The message to a specialist whose turn ended while its long dev lease's process runs, before its silence
+        would be taken for a lost session."""
+        return _LEASE_WAKE
+
+    def wait_wake(self, tests: Sequence[str], profiles: Sequence[str]) -> str:
+        """The message to a specialist whose turn ended while ``tests`` of its branch, or ``profiles`` another branch
+        runs of its head, still run, before its silence would be taken for a lost session."""
+        running = [f"your test {request_id}" for request_id in tests]
+        running += [f"the profile {request_id} of your head, which another branch runs" for request_id in profiles]
+        return _WAIT_WAKE.format(running="; ".join(running))
+
+    def nudge(self) -> str:
+        """The message to a specialist whose turn ended with nothing of its own running and nothing new arrived."""
+        return _NUDGE
+
+    def versions(self) -> Mapping[str, str]:
+        """``{prompt name: the first hex digits of the sha256 of its text}``, for the session's manifest fingerprint."""
+        texts = {
+            SPECIALIST_ROLE_KEY: self._role("{workload}", _NO_GPU),
+            SPECIALIST_LAUNCH_KEY: "\n".join((*_LAUNCH, *self.facts.directions)),
+        }
+        return {name: hashlib.sha256(text.encode()).hexdigest()[:VERSION_HEX] for name, text in texts.items()}
+
+
+def _direction_name(direction: str) -> str:
+    return direction.split(":", 1)[0]
+
+
+def _fake_gains(rows: Sequence[FakeGain]) -> str:
+    return "\n".join(f"- {row.shows_as} Refused as {row.refusal_code}." for row in rows)
+
+
+def _native(trees: Mapping[str, str], refused: Sequence[str]) -> str:
+    if not trees:
+        return ""
+    named = ", ".join(f"{component}'s C++/HIP sources under {prefix}" for component, prefix in sorted(trees.items()))
+    return _NATIVE.format(trees=named, refused=", ".join(refused))
+
+
+def _references(references: Mapping[str, str]) -> str:
     if not references:
         return ""
     listed = "; ".join(f"{name} at {path}{_HOLDS.get(name, '')}" for name, path in sorted(references.items()))
@@ -517,176 +612,55 @@ def _references(references: Mapping[str, Path]) -> str:
     )
 
 
-def launch_prompt(
-    start: SessionStart, *, head: str, worktree: str, recent: Sequence[BranchLogRecord], last_end: str = ""
-) -> str:
-    """The first message of one session of the specialist ``start`` runs; ``last_end`` says how the previous one ended.
-
-    ``recent`` is the whole branch log; one longer than the launch shows is summed up first."""
-    task = start.task
-    summary = _summary(recent) if len(recent) > RECENT_ENTRIES else ""
-    sections = [summary] if summary else []
-    if task.repair is not None:
-        sections.append(_repair(task.repair))
-    direction = task.direction.strip()
-    if direction:
-        sections.append(_DIRECTION.format(direction=direction))
-    brief = task.brief.strip()
-    if brief:
-        sections.append(_BRIEF.format(brief=brief))
-    sections.append(
-        _STANDING.format(branch=start.branch, start_commit=start.start_commit, head=head, k=start.k, worktree=worktree)
-    )
-    if recent:
-        shown = recent[-RECENT_ENTRIES:]
-        sections.append(_LOG.format(count=len(shown), entries="\n".join(_entry(record) for record in shown)))
-    else:
-        sections.append(_FIRST)
-    if last_end:
-        sections.append(_ENDED.format(last_end=last_end))
-    return "\n\n".join(sections) + "\n"
-
-
-def _summary(log: Sequence[BranchLogRecord]) -> str:
+def _summary(log: Sequence[LogLine]) -> str:
     """What the branch ``log`` tried, its results and its latest plan, past superseded entries and the runtime's
     restart notices; ``""`` when it holds none of them."""
-    replaced = {record.entry.supersedes for record in log}
-    live = [r for r in log if r.entry_id not in replaced and not restart_notice(r.entry.content)]
+    replaced = {line.supersedes for line in log if line.supersedes}
+    live = [line for line in log if line.entry_id not in replaced and not line.restart]
     sections = []
     for title, kind in (("Tried", BranchLogType.ATTEMPT), ("Results", BranchLogType.RESULT)):
-        found = [record for record in live if record.entry.kind is kind]
+        found = [line for line in live if line.kind is kind]
         shown = found[-SUMMARY_ENTRIES:]
         if shown:
-            entries = "\n".join(_entry(record, SUMMARY_ENTRY_CHARS) for record in shown)
+            entries = "\n".join(_entry(line, SUMMARY_ENTRY_CHARS) for line in shown)
             sections.append(_SUMMARY_KIND.format(title=title, shown=len(shown), total=len(found), entries=entries))
-    plans = [record for record in live if record.entry.kind is BranchLogType.PLAN]
+    plans = [line for line in live if line.kind is BranchLogType.PLAN]
     if plans:
         sections.append(_SUMMARY_NEXT.format(entry=_entry(plans[-1])))
     return _SUMMARY.format(count=len(log), sections="\n".join(sections)) if sections else ""
 
 
-def wake_message(items: Sequence[InboxItem], notices: Sequence[BranchLogRecord], *, integration: str = "") -> str:
-    """The message that wakes a specialist whose turn ended: what its inbox and the runtime's notices brought since,
-    and ``integration``, what the integration head holds, once it moved or the branch followed it."""
-    woken = _WAKE.format(items=_arrivals(items, notices)) if items or notices else _MOVED
-    return f"{woken}\n\n{integration_section(integration)}" if integration else woken
+def _worktree(at: ResumeAt) -> str:
+    return (_KEPT if at.kept else _RESET).format(worktree=at.worktree, head=at.head)
 
 
-def integration_section(holdings: str) -> str:
-    """``holdings``, what the integration head holds against the branch head, as a launch or a resume ends with it."""
-    return _INTEGRATION.format(integration=holdings)
-
-
-@dataclass(frozen=True)
-class Resume:
-    """Where a crashed or idle CLI's conversation goes on: why it stopped, and the head its worktree is at, ``kept``
-    as the CLI left it or reset to that head."""
-
-    reason: str
-    head: str
-    worktree: str
-    kept: bool
-
-
-def resume_message(resume: Resume, items: Sequence[InboxItem], notices: Sequence[BranchLogRecord]) -> str:
-    """The first message of a CLI restarted on its crashed conversation, in place of a launch prompt."""
-    worktree = (_KEPT if resume.kept else _RESET).format(worktree=resume.worktree, head=resume.head)
-    arrived = _ARRIVED.format(items=_arrivals(items, notices)) if items or notices else _NOTHING_ARRIVED
-    return _RESUMED.format(reason=resume.reason, worktree=worktree, arrived=arrived)
-
-
-@dataclass(frozen=True)
-class IntegrationHeads:
-    """The integration head a conversation's last finished turn saw, and the one it goes on at."""
-
-    seen: str
-    now: str
-
-
-def idle_resume_message(
-    resume: Resume, integration: IntegrationHeads, items: Sequence[InboxItem], notices: Sequence[BranchLogRecord]
-) -> str:
-    """The first message of a CLI that goes on with the conversation of a session that ended idle: what changed since
-    its last turn, in place of a launch prompt."""
-    worktree = (_KEPT if resume.kept else _RESET).format(worktree=resume.worktree, head=resume.head)
-    moved = _INTEGRATION_MOVED if integration.seen != integration.now else _INTEGRATION_STILL
-    arrived = _IDLE_ARRIVED.format(items=_arrivals(items, notices)) if items or notices else _IDLE_NOTHING
-    return _IDLE_RESUMED.format(
-        reason=resume.reason,
-        worktree=worktree,
-        integration=moved.format(seen=integration.seen, now=integration.now),
-        arrived=arrived,
-    )
-
-
-def _arrivals(items: Sequence[InboxItem], notices: Sequence[BranchLogRecord]) -> str:
-    lines = [_WAKE_ITEM.format(kind=item.kind.value, pointer=item.pointer, summary=item.summary) for item in items]
-    lines += [_entry(record) for record in notices]
+def _arrivals(arrivals: Sequence[Arrival], notices: Sequence[LogLine]) -> str:
+    lines = [_WAKE_ITEM.format(kind=item.kind, pointer=item.pointer, summary=item.summary) for item in arrivals]
+    lines += [_entry(line) for line in notices]
     return "\n".join(lines)
 
 
-def lease_wake_message() -> str:
-    """The message to a specialist whose turn ended while its long dev lease's process runs, before its silence would
-    be taken for a lost session."""
-    return _LEASE_WAKE
-
-
-def wait_wake_message(tests: Sequence[str], profiles: Sequence[str]) -> str:
-    """The message to a specialist whose turn ended while ``tests`` of its branch, or ``profiles`` another branch runs
-    of its head, still run, before its silence would be taken for a lost session."""
-    running = [f"your test {request_id}" for request_id in tests]
-    running += [f"the profile {request_id} of your head, which another branch runs" for request_id in profiles]
-    return _WAIT_WAKE.format(running="; ".join(running))
-
-
-def nudge_message() -> str:
-    """The message to a specialist whose turn ended with nothing of its own running and nothing new arrived."""
-    return _NUDGE
-
-
-def prompt_versions() -> dict[str, str]:
-    """``{prompt name: the first hex digits of the sha256 of its text}``, for the session's manifest fingerprint."""
-    role = _ROLE.format(
-        workload="{workload}", fake_gains=_fake_gains(), directions=_direction_names(), gpu_rule=_NO_GPU
-    )
-    texts = {"specialist_role": role, "specialist_launch": "\n".join(_LAUNCH)}
-    return {name: hashlib.sha256(text.encode()).hexdigest()[:VERSION_HEX] for name, text in texts.items()}
-
-
-def _direction_names() -> str:
-    return "; ".join(direction_name(direction) for direction in DIRECTIONS)
-
-
-def _fake_gains() -> str:
-    # Imported here: the catalog loads main's flow runtime, which importing the multi-branch command must not.
-    from hyperloom.measure.fake_gain import FAKE_GAINS
-
-    return "\n".join(f"- {row.shows_as} Refused as {row.refusal_code}." for row in FAKE_GAINS)
-
-
-def _repair(request: RepairRequest) -> str:
-    intent, judgement = request.intent, request.judgement
+def _repair(repair: RepairBrief) -> str:
     return _REPAIR.format(
-        candidate=judgement.request_ids[0],
-        from_branch=intent.branch,
-        parent_commit=intent.parent_commit,
-        gain_pct=judgement.gain_pct,
-        held_back_by=", ".join(judgement.refused_by) or "the accuracy gate",
-        target=intent.target,
-        mechanism=intent.mechanism,
-        layer=intent.layer.value,
-        delta=json.dumps(request.candidate_delta.to_document(), sort_keys=True),
-        diagnosis=request.diagnosis.strip(),
+        candidate=repair.candidate,
+        from_branch=repair.from_branch,
+        parent_commit=repair.parent_commit,
+        gain_pct=repair.gain_pct,
+        held_back_by=", ".join(repair.held_back_by) or "the accuracy gate",
+        target=repair.target,
+        mechanism=repair.mechanism,
+        layer=repair.layer,
+        delta=repair.delta,
+        diagnosis=repair.diagnosis.strip(),
     )
 
 
-def _entry(record: BranchLogRecord, chars: int = ENTRY_CHARS) -> str:
-    entry = record.entry
-    tests = f" ({', '.join(entry.request_ids)})" if entry.request_ids else ""
-    content = " ".join(entry.content.split())
+def _entry(line: LogLine, chars: int = ENTRY_CHARS) -> str:
+    tests = f" ({', '.join(line.request_ids)})" if line.request_ids else ""
+    content = " ".join(line.content.split())
     if len(content) > chars:
         content = content[: chars - 3] + "..."
-    return _ENTRY.format(entry_id=record.entry_id, kind=entry.kind.value, tests=tests, content=content)
+    return _ENTRY.format(entry_id=line.entry_id, kind=line.kind.value, tests=tests, content=content)
 
 
 __all__ = [
@@ -695,16 +669,5 @@ __all__ = [
     "SUMMARY_ENTRIES",
     "SUMMARY_ENTRY_CHARS",
     "VERSION_HEX",
-    "IntegrationHeads",
-    "Resume",
-    "idle_resume_message",
-    "integration_section",
-    "launch_prompt",
-    "lease_wake_message",
-    "nudge_message",
-    "prompt_versions",
-    "resume_message",
-    "role_prompt",
-    "wait_wake_message",
-    "wake_message",
+    "SpecialistPrompts",
 ]

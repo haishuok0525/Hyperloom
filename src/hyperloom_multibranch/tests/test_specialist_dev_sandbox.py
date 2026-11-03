@@ -36,9 +36,9 @@ from hyperloom_multibranch.specialist.dev_sandbox import (
 )
 from hyperloom_multibranch.specialist.framework_guard import FrameworkGuard, GuardedPackage
 from hyperloom_multibranch.specialist.judging import NOTICE
-from hyperloom_multibranch.specialist.prompts import role_prompt
 from hyperloom_multibranch.specialist.runtime import SessionCrashed, SessionStart
 from hyperloom_multibranch.specialist.worktree import SourceBase
+from hyperloom_multibranch.tests.brain_voice import VOICE, role_prompt
 from hyperloom_multibranch.tests.branch_rig import branch_rig
 from hyperloom_multibranch.tests.subprocess_sandbox import SubprocessSandbox
 from hyperloom_multibranch.toolbox.hosted_leases import HostedBranchLease
@@ -817,6 +817,7 @@ async def session_rig(tmp_path):
         tokens=_Tokens(),
         processes=SimpleNamespace(adopt=lambda *args, **kwargs: None),
         repo=built.repo,
+        voice=VOICE,
         dev_leases=held,
     )
     place = BranchPlace(built.base.worktree(B1, tmp_path / "wt"), built.blackboard, tmp_path / "session")

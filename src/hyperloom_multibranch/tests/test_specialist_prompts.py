@@ -15,19 +15,25 @@ from hyperloom_multibranch.contracts.judgement import AccuracyVerdict, Judgement
 from hyperloom_multibranch.contracts.lifecycle import BranchTask
 from hyperloom_multibranch.contracts.blackboard.records import BranchLogRecord, InboxItem
 from hyperloom_multibranch.contracts.blackboard.vocab import InboxKind
-from hyperloom_multibranch.specialist import prompts
+from hyperloom_multibranch.brain.specialist import prompts
 from hyperloom_multibranch.specialist.directions import DIRECTIONS
 from hyperloom_multibranch.specialist.exhausted import EXHAUSTED_PREFIX, ExhaustedWhy
 from hyperloom_multibranch.contracts.sources import NativeTree, SourceRoot
-from hyperloom_multibranch.specialist.prompts import (
+from hyperloom_multibranch.brain.specialist.prompts import (
     ENTRY_CHARS,
     RECENT_ENTRIES,
     SUMMARY_ENTRIES,
     SUMMARY_ENTRY_CHARS,
     VERSION_HEX,
+)
+from hyperloom_multibranch.tests.brain_voice import (
+    Resume,
     launch_prompt,
+    nudge_message,
     prompt_versions,
+    resume_message,
     role_prompt,
+    wake_message,
 )
 from hyperloom_multibranch.specialist.judging import NOTICE
 from hyperloom_multibranch.specialist.runtime import SessionStart
@@ -273,9 +279,9 @@ def test_the_role_says_the_inbox_block_a_tool_reply_ends_with_is_not_the_tool_s_
 def test_the_wake_and_nudge_messages_say_what_arrived_or_that_nothing_did():
     item = InboxItem(InboxKind.JUDGEMENT, "s1", "r7", "r7 measured +2.1%: committed", 0.0)
 
-    woken = prompts.wake_message([item], [])
+    woken = wake_message([item], [])
     assert "this arrived for your branch" in woken and "- judgement r7: r7 measured +2.1%: committed" in woken
-    nudge = prompts.nudge_message()
+    nudge = nudge_message()
     assert "nothing new for your branch" in nudge
     assert "Nothing arrives on its own" in nudge and "blackboard_brief" in nudge
     assert "decides when your branch stops" not in nudge
@@ -284,13 +290,13 @@ def test_the_wake_and_nudge_messages_say_what_arrived_or_that_nothing_did():
 def test_a_wake_after_the_integration_head_moved_carries_what_it_holds():
     item = InboxItem(InboxKind.RESULT, "s1", "r7", "r7 has its result", 0.0)
 
-    moved = prompts.wake_message([], [], integration="The integration head is i2: server arguments --x 1.")
-    with_item = prompts.wake_message([item], [], integration="The integration head is i2.")
+    moved = wake_message([], [], integration="The integration head is i2: server arguments --x 1.")
+    with_item = wake_message([item], [], integration="The integration head is i2.")
 
     assert moved.startswith("Since your last turn ended, the integration head moved.")
     assert "Where the session's gains stack:\nThe integration head is i2: server arguments --x 1." in moved
     assert with_item.index("- result r7") < with_item.index("The integration head is i2.")
-    assert "gains stack" not in prompts.wake_message([item], [])
+    assert "gains stack" not in wake_message([item], [])
 
 
 def test_the_role_follows_the_integration_head_with_a_reroot_entry_and_never_replays_what_it_holds():
@@ -323,8 +329,8 @@ def test_a_resumed_cli_hears_why_it_stopped_its_worktree_and_what_arrived_meanwh
     item = InboxItem(InboxKind.RESULT, "s1", "r7", "r7 has its result", 0.0)
     notice = _record(9, "the specialist crashed")
 
-    kept = prompts.resume_message(prompts.Resume("the agent CLI exited 1", "c3", "/wt/s1", kept=True), [item], [notice])
-    reset = prompts.resume_message(prompts.Resume("the session was lost", "c4", "/wt/s1", kept=False), [], [])
+    kept = resume_message(Resume("the agent CLI exited 1", "c3", "/wt/s1", kept=True), [item], [notice])
+    reset = resume_message(Resume("the session was lost", "c4", "/wt/s1", kept=False), [], [])
 
     assert "the agent CLI exited 1" in kept and "same conversation" in kept
     assert "/wt/s1 is as you left it" in kept and "- result r7: r7 has its result" in kept and "[e9]" in kept
@@ -383,7 +389,7 @@ def test_a_branch_with_no_candidate_buys_the_missing_number_before_it_stops():
 
     assert "no candidate clears the bar is a missing measurement, not a stop" in prompt
     assert "the cheapest test that would prove it wrong" in prompt
-    assert "buy the number first" in prompts.nudge_message()
+    assert "buy the number first" in nudge_message()
 
 
 def test_the_role_reads_a_candidate_s_gain_from_its_judgement_not_from_quoted_figures():
@@ -441,7 +447,7 @@ def test_the_role_says_settings_running_out_never_ends_a_direction_and_no_brief_
 
 
 def test_the_nudge_sends_a_model_that_ran_out_of_settings_to_source_work():
-    assert "Settings run out; source work does not" in prompts.nudge_message()
+    assert "Settings run out; source work does not" in nudge_message()
 
 
 def test_the_role_says_a_bound_table_variable_takes_any_branch_s_table_under_its_target():
@@ -818,7 +824,7 @@ def test_the_nudge_and_role_send_later_heads_on_a_path_whose_profile_analysis_fa
     # Each head is profiled once already (toolbox profile_exists); the waste was profiling the next head on a path
     # whose analysis fails, so the rule has to cover later heads, not the failed one.
     failed = "Once a profile analysis failed, profile no later head on the same execution path"
-    nudge = prompts.nudge_message()
+    nudge = nudge_message()
     role = role_prompt(WORKLOAD)
 
     assert failed in nudge and failed in role
