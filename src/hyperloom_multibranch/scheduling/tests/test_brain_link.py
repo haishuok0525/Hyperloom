@@ -9,11 +9,18 @@ import sys
 import types
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from hyperloom_multibranch.brain import BrainV0
-from hyperloom_multibranch.contracts.brain import BrainSetup, CallSite, JudgeObservation, JudgeRound
+from hyperloom_multibranch.contracts.brain import (
+    BRAIN_CONTRACT_VERSION,
+    BrainSetup,
+    CallSite,
+    JudgeObservation,
+    JudgeRound,
+)
 from hyperloom_multibranch.contracts.llm import Completion
 from hyperloom_multibranch.scheduling.brain_link import (
     BRAIN_ENV,
@@ -24,6 +31,8 @@ from hyperloom_multibranch.scheduling.brain_link import (
 )
 
 MODULE = "hyperloom_multibranch_test_brains"
+#: The repository's declaration of where the brain is, which an outer loop's gate reads.
+BRAIN_SCOPE = Path(__file__).resolve().parents[4] / "brain_scope.toml"
 
 
 @dataclass(frozen=True)
@@ -86,3 +95,11 @@ def test_the_environment_names_another_brain_of_the_same_major_version(monkeypat
 def test_a_brain_this_body_cannot_run_is_refused(spec: str, why: str) -> None:
     with pytest.raises(BrainLoadError, match=why.replace("[", r"\[").replace("]", r"\]")):
         load_brain(spec)
+
+
+def test_the_declared_brain_scope_names_this_contract_and_the_brain_package() -> None:
+    declared = BRAIN_SCOPE.read_text(encoding="utf-8")
+
+    assert f'contract_version = "{BRAIN_CONTRACT_VERSION}"' in declared
+    assert 'brain = ["src/hyperloom_multibranch/brain/"]' in declared
+    assert '"src/hyperloom_multibranch/contracts/brain.py"' in declared

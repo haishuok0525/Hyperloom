@@ -1,0 +1,16 @@
+# Where the multi-branch brain is: the code an outer loop may rewrite. Everything else is the body, which only people
+# change. The brain API is the contract the body calls the brain through, which only people change too.
+contract_version = "0.2"
+brain = ["src/hyperloom_multibranch/brain/"]
+brain_api = [
+    "src/hyperloom_multibranch/contracts/brain.py",
+    "src/hyperloom_multibranch/contracts/brain_brief.py",
+]
+
+[slots.judge]
+role = "select"
+paths = ["src/hyperloom_multibranch/brain/judge/"]
+
+[slots.specialist]
+role = "propose"
+paths = ["src/hyperloom_multibranch/brain/specialist/"]
