@@ -1,0 +1,9 @@
+# Where the brain is: the code an outer loop may rewrite. Everything else is the body, which only people change.
+# The brain API is the contract the body calls the brain through, which only people change too.
+contract_version = "0.1"
+brain = ["src/hyperloom/brain/"]
+brain_api = ["src/hyperloom/brain_api/"]
+
+[slots.main]
+role = "propose"
+paths = ["src/hyperloom/brain/"]
