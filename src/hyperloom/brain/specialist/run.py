@@ -20,6 +20,8 @@ DEFAULT_MAX_TURNS = 30
 #: Prior attempts a brief lists.
 MAX_PRIOR_ATTEMPTS = 20
 _MODE_RESEARCH = "research"
+# The kind of the Coordinator's dispatch that authors a source win from the live tree.
+_LOCAL_EXPLORE = "framework_local_explore"
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
 
 
@@ -107,6 +109,7 @@ def brief_inputs(state: SearchState, ask: ProposeAsk) -> BriefInputs | None:
         extra_focus_tags=focus,
         scope=scope,
         mode=MODE_PATCH if ask.patches else _MODE_RESEARCH,
+        task_kind=_LOCAL_EXPLORE if ask.patches else "",
         task_description=ask.task,
         wall_budget_sec=ask.wall_budget_sec,
         baseline_tput=state.baseline_tput,

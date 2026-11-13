@@ -67,6 +67,16 @@ _TASK_KIND_BRIEFS: dict[str, str] = {
         " Study the apply errors in the notes, produce a corrected patch."
     ),
 }
+# The same briefs for a specialist that delivers through its reply, with its edit left in the tree.
+_REPLY_TASK_KIND_BRIEFS: dict[str, str] = {
+    "framework_local_explore": (
+        "No upstream PR was found. Author the best throughput win directly from"
+        " the live source + profiling evidence. Read the source in Section 7"
+        " and the roofline (Section 4a) to locate the hot path."
+        " Deliverable: a source edit left in the tree"
+        " OR a config/env ``proposal_set`` entry. You do not benchmark."
+    ),
+}
 
 
 # Section 1 — Identity & autonomy
@@ -438,7 +448,8 @@ def _section_mandate(inp: BriefInputs) -> list[str]:
         ]
     )
 
-    brief = _TASK_KIND_BRIEFS.get(inp.task_kind.strip(), "")
+    briefs = _REPLY_TASK_KIND_BRIEFS if inp.facts.replies else _TASK_KIND_BRIEFS
+    brief = briefs.get(inp.task_kind.strip(), "")
     if brief:
         rows.extend(["", brief])
 

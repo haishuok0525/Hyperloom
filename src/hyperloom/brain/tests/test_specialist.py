@@ -123,6 +123,8 @@ def test_a_freeform_ask_is_briefed_on_its_task_with_the_focus_of_the_gap_it_is_a
     assert "heartbeat" not in system and "inbox.json" not in system
     assert "``patch_reason``" in system
     assert "`host.step_overhead`" in user
+    assert inp.task_kind == "framework_local_explore"
+    assert "Deliverable: a source edit left in the tree" in user and "WebSearch" not in user
     assert "Your working directory is the installed vllm 0.33.0 source" in user
     assert "(unavailable: pr_monitor disabled)" in user
     assert "graphs (--enforce-eager) [revert] gain=-3.00% — slower" in user
@@ -133,6 +135,7 @@ def test_a_freeform_ask_is_briefed_on_its_task_with_the_focus_of_the_gap_it_is_a
 def test_a_domain_ask_runs_that_domain_and_one_without_patches_is_read_only() -> None:
     inp = brief_inputs(_state(), ProposeAsk(domain="serving_specialist", max_turns=9))
     assert (inp.domain.key, inp.scope, inp.mode, inp.max_turns) == ("serving_specialist", "domain", "research", 9)
+    assert inp.task_kind == ""
     system, _ = build_specialist_prompts(inp)
     assert "Read-only dispatch" in system and "``patch_reason``" not in system
     assert brief_inputs(_state(), ProposeAsk(domain="research_scout_specialist")) is None
